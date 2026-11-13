@@ -8,6 +8,7 @@ const testEnv = {
 	ADMIN_API_TOKEN: 'fake-admin-api-token-00000000000000',
 	API_BASE_URL: 'http://127.0.0.1:9',
 	ORIGIN: `http://127.0.0.1:${PORT}`,
+	PROTOCOL_HEADER: 'x-forwarded-proto',
 	HOST: '127.0.0.1',
 	PORT: String(PORT)
 };
@@ -15,7 +16,9 @@ const testEnv = {
 export default defineConfig({
 	testDir: 'e2e',
 	use: {
+		viewport: { width: 390, height: 844 },
 		baseURL: `http://127.0.0.1:${PORT}`,
+		extraHTTPHeaders: { 'x-forwarded-proto': 'http' },
 		launchOptions: process.env.PW_CHROMIUM_PATH
 			? { executablePath: process.env.PW_CHROMIUM_PATH }
 			: {}
