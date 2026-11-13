@@ -146,7 +146,7 @@ func (s *Store) Enqueue(ctx context.Context, now time.Time, in EnqueueInput) (re
 	if in.Held {
 		hold = holdNoProv
 	} else {
-		provider = in.Provider
+		provider = nullIfEmpty(in.Provider)
 	}
 	bodyBytes := len(in.Subject) + len(in.Text) + len(in.HTML) + len(in.SMSBody)
 	ids := make([]string, 0, n)

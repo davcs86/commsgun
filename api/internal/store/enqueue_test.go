@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -255,7 +257,7 @@ func TestOpenPragmas(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	for pragma, want := range map[string]int{"auto_vacuum": 2, "foreign_keys": 1, "busy_timeout": 5000} {
+	for pragma, want := range map[string]int{"auto_vacuum": 2, "foreign_keys": 1, "busy_timeout": int(constants.SQLiteBusyTimeout.Milliseconds())} {
 		var got int
 		if err := s.w.QueryRow("PRAGMA " + pragma).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s = %d (%v), want %d", pragma, got, err, want)
@@ -277,5 +279,31 @@ func TestTranslateBusy(t *testing.T) {
 	other := errors.New("boom")
 	if err := translate(other); err != other {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSchemaCreationIsAtomic(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "x.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	bad := `CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version(version) VALUES (1);
+CREATE TABLE a (x);
+INSERT INTO missing_table VALUES (1);`
+	if err := initSchema(db, bad); err == nil {
+		t.Fatal("expected failure")
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("objects left behind: %d (%v)", n, err)
+	}
+	if err := initSchema(db, schemaSQL); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name IN ('messages','attempts','requests','rate_counters','provider_pauses')`).Scan(&n); err != nil || n != 5 {
+		t.Fatalf("tables = %d (%v)", n, err)
 	}
 }

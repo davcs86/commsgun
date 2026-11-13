@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/davcs86/commsgun/api/internal/constants"
 	"modernc.org/sqlite"
 )
 
@@ -19,7 +20,6 @@ var schemaSQL string
 const (
 	dbFile        = "commsgun.db"
 	schemaVersion = 1
-	busyTimeoutMS = 5000
 	sqliteBusy    = 5
 	sqliteFull    = 13
 )
@@ -37,18 +37,23 @@ func Open(dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("store: create data dir: %w", err)
 	}
 	path := filepath.Join(dataDir, dbFile)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("store: create db file: %w", err)
+	}
+	f.Close()
 	// auto_vacuum must precede journal_mode so it applies before any page is written.
-	wdsn := fmt.Sprintf("file:%s?_txlock=immediate&_pragma=auto_vacuum(INCREMENTAL)&_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", path, busyTimeoutMS)
+	wdsn := fmt.Sprintf("file:%s?_txlock=immediate&_pragma=auto_vacuum(INCREMENTAL)&_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", path, constants.SQLiteBusyTimeout.Milliseconds())
 	w, err := sql.Open("sqlite", wdsn)
 	if err != nil {
 		return nil, err
 	}
 	w.SetMaxOpenConns(1)
-	if err := initSchema(w); err != nil {
+	if err := initSchema(w, schemaSQL); err != nil {
 		w.Close()
 		return nil, err
 	}
-	rdsn := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)", path, busyTimeoutMS)
+	rdsn := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)", path, constants.SQLiteBusyTimeout.Milliseconds())
 	r, err := sql.Open("sqlite", rdsn)
 	if err != nil {
 		w.Close()
@@ -80,24 +85,29 @@ func (s *Store) Close() error {
 	return err
 }
 
-func initSchema(w *sql.DB) error {
+func initSchema(w *sql.DB, ddl string) error {
+	tx, err := w.Begin()
+	if err != nil {
+		return translate(err)
+	}
+	defer tx.Rollback()
 	var n int
-	if err := w.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name='schema_version'`).Scan(&n); err != nil {
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name='schema_version'`).Scan(&n); err != nil {
 		return translate(err)
 	}
 	if n == 0 {
-		if _, err := w.Exec(schemaSQL); err != nil {
+		if _, err := tx.Exec(ddl); err != nil {
 			return translate(err)
 		}
 	}
 	var v int
-	if err := w.QueryRow(`SELECT version FROM schema_version`).Scan(&v); err != nil {
+	if err := tx.QueryRow(`SELECT version FROM schema_version`).Scan(&v); err != nil {
 		return translate(err)
 	}
 	if v != schemaVersion {
 		return fmt.Errorf("store: schema version %d, want %d", v, schemaVersion)
 	}
-	return nil
+	return translate(tx.Commit())
 }
 
 // translate maps lock/full conditions to ErrBusy and passes other errors through.

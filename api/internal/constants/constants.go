@@ -28,6 +28,7 @@ const (
 	SMSBodyMaxLen        = 1600
 	AttemptMessageMaxLen = 300
 	AdminPageSize        = 50
+	SQLiteBusyTimeout    = 5 * time.Second
 )
 
 // PollSchedule lists bounce-poll offsets from sent_at; callers must not mutate it.
