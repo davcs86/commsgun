@@ -1,0 +1,9 @@
+node_modules
+build
+.svelte-kit
+test-results
+e2e
+.env
+.env.*
+Dockerfile
+.dockerignore

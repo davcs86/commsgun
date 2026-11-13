@@ -1,0 +1,97 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: api/go.mod
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          echo "$out"
+          test -z "$out"
+      - run: go vet ./...
+      - name: staticcheck
+        # Built with the module's Go: an older toolchain cannot load go1.27 packages.
+        env:
+          GOTOOLCHAIN: local
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+      - run: go test ./... -race
+
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e --trace off
+
+  images:
+    needs: [api, ui]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - run: shellcheck scripts/smoke.sh
+      - run: docker build --label "org.opencontainers.image.revision=${GITHUB_SHA}" -t commsgun-api:ci api
+      - run: docker build --label "org.opencontainers.image.revision=${GITHUB_SHA}" -t commsgun-ui:ci ui
+      - name: Images carry this commit as their revision label
+        run: |
+          for name in api ui; do
+            rev="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "commsgun-${name}:ci")"
+            echo "commsgun-${name}: ${rev}"
+            test "$rev" = "$GITHUB_SHA"
+          done
+      - run: scripts/smoke.sh commsgun-api:ci commsgun-ui:ci
+      - name: Push to GHCR and print the digests
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for name in api ui; do
+            ref="ghcr.io/davcs86/commsgun-${name}:${GITHUB_SHA}"
+            docker tag "commsgun-${name}:ci" "$ref"
+            docker push "$ref"
+          done
+          # Both :<sha> tags exist before either moving :main tag points at them.
+          for name in api ui; do
+            ref="ghcr.io/davcs86/commsgun-${name}:${GITHUB_SHA}"
+            # Moving tag: deployments pin by digest and use this only to discover the newest build.
+            docker tag "commsgun-${name}:ci" "ghcr.io/davcs86/commsgun-${name}:main"
+            docker push "ghcr.io/davcs86/commsgun-${name}:main"
+            sha="$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")"
+            digest="ghcr.io/davcs86/commsgun-${name}@${sha##*@}"
+            echo "$digest"
+            echo "$digest" >> "$GITHUB_STEP_SUMMARY"
+          done
