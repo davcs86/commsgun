@@ -43,8 +43,13 @@ export function safeNext(next: string | null): string {
 	try {
 		const url = new URL(next, 'http://x');
 		if (url.origin !== 'http://x') return '/';
-		if (url.pathname === '/login' || url.pathname === '/logout') return '/';
-		return url.pathname + url.search;
+		const { pathname } = url;
+		if (pathname.startsWith('//')) return '/';
+		if (/^\/(login|logout)\/?$/.test(pathname)) return '/';
+		const result = pathname + url.search;
+		const again = new URL(result, 'http://x');
+		if (again.origin !== 'http://x' || again.pathname !== pathname) return '/';
+		return result;
 	} catch {
 		return '/';
 	}

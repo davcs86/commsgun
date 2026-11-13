@@ -106,7 +106,14 @@ describe('safeNext', () => {
 		['/login', '/'],
 		['/login?next=/x', '/'],
 		['/logout', '/'],
-		['/messages?range=7d', '/messages?range=7d']
+		['/messages?range=7d', '/messages?range=7d'],
+		['/.//evil.example', '/'],
+		['/..//evil.example', '/'],
+		['/a/..//evil.example', '/'],
+		['/.///evil.example', '/'],
+		['/login/', '/'],
+		['/logout?x=1', '/'],
+		['/a/../messages', '/messages']
 	])('safeNext(%s) is %s', (input, want) => {
 		expect(safeNext(input)).toBe(want);
 	});
