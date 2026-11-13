@@ -34,6 +34,7 @@ export function loadEnv(source: Record<string, string | undefined>): Env {
 	};
 
 	if (bad.length > 0) throw new Error(`invalid environment: ${bad.join(', ')}`);
+	env.origin = new URL(env.origin).origin;
 	return env;
 }
 

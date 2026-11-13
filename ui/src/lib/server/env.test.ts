@@ -52,4 +52,11 @@ describe('loadEnv', () => {
 		expect(env.adminApiToken).toBe(valid.ADMIN_API_TOKEN);
 		expect(env.origin).toBe(valid.ORIGIN);
 	});
+
+	it.each(['https://x.test/', 'https://x.test:443', 'https://x.test/some/path'])(
+		'stores the normalised origin for ORIGIN = %s',
+		(origin) => {
+			expect(loadEnv({ ...valid, ORIGIN: origin }).origin).toBe('https://x.test');
+		}
+	);
 });
