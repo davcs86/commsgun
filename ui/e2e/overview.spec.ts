@@ -6,6 +6,8 @@ import { receivedRequests, resetRequests, setScenario } from './stub-api.js';
 
 const SESSION_SECRET = 'fake-session-secret-000000000000000';
 const DAY_MS = 86_400_000;
+const COMPACT_TIME = (zone: string) =>
+	new RegExp(`^(\\d{4}-\\d{2}-\\d{2} )?\\d{2}:\\d{2} ${zone}$`);
 
 test.beforeEach(async ({ context, baseURL }) => {
 	await setScenario('normal');
@@ -16,6 +18,8 @@ test.beforeEach(async ({ context, baseURL }) => {
 
 const tile = (page: Page, label: string) =>
 	page.getByTestId('stat-tiles').locator('div', { has: page.getByText(label, { exact: true }) });
+
+const tileValue = (page: Page, label: string) => tile(page, label).locator('dd').first();
 
 const chip = (page: Page, range: string) =>
 	page.getByRole('navigation', { name: 'Range' }).getByRole('link', { name: range, exact: true });
@@ -45,7 +49,7 @@ test('default view: 1h is the current range and the tiles show the totals', asyn
 		['Retries', '4']
 	];
 	for (const [label, value] of expected) {
-		await expect(tile(page, label).locator('dd')).toHaveText(value);
+		await expect(tileValue(page, label)).toHaveText(value);
 	}
 	await expect(page.getByRole('heading', { name: 'Errors by type' })).toBeVisible();
 	const errors = page.getByRole('region', { name: 'Errors by type' });
@@ -118,8 +122,8 @@ test.describe('in Mexico City', () => {
 	}) => {
 		await page.goto('/?channel=email');
 		await page.getByText('Custom range', { exact: true }).click();
-		await page.getByLabel('From').fill('2026-11-12T08:00');
-		await page.getByLabel('To').fill('2026-11-12T20:30');
+		await page.getByLabel('From', { exact: true }).fill('2026-11-12T08:00');
+		await page.getByLabel('To', { exact: true }).fill('2026-11-12T20:30');
 		await page.getByRole('button', { name: 'Show range' }).click();
 
 		await expect(page).toHaveURL(/from=/);
@@ -133,29 +137,42 @@ test.describe('in Mexico City', () => {
 		).toHaveCount(0);
 	});
 
-	test('times are re-rendered in the browser zone after hydration', async ({ page }) => {
+	test('times and zone notes use the browser zone after hydration', async ({ page }) => {
 		await page.goto('/');
 		const time = page.getByTestId('utc-time').first();
 		await expect(time).toHaveAttribute('datetime', /Z$/);
-		await expect(time).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} CST$/);
+		await expect(time).toHaveText(COMPACT_TIME('CST'));
+		await expect(page.getByTestId('outcome-chart')).toContainText('Times in CST');
+		await page.getByText('Custom range', { exact: true }).click();
+		await expect(page.locator('details form')).toContainText('Times in CST');
+	});
+
+	test('a refresh keeps the custom-range inputs in local time', async ({ page }) => {
+		await page.clock.install();
+		await page.goto('/?from=2026-11-12T14:00:00.000Z&to=2026-11-13T02:30:00.000Z');
+		await expect(page.getByLabel('From', { exact: true })).toHaveValue('2026-11-12T08:00');
+		await resetRequests();
+		await page.clock.runFor(30_000);
+		await expect.poll(async () => (await statsRequests()).length).toBe(1);
+		await expect(page.getByLabel('From', { exact: true })).toHaveValue('2026-11-12T08:00');
+		await expect(page.getByLabel('To', { exact: true })).toHaveValue('2026-11-12T20:30');
 	});
 });
 
 test.describe('without JavaScript', () => {
 	test.use({ javaScriptEnabled: false });
 
-	test('times are rendered in UTC', async ({ page }) => {
+	test('times and zone notes are rendered in UTC', async ({ page }) => {
 		await page.goto('/');
-		await expect(page.getByTestId('utc-time').first()).toHaveText(
-			/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$/
-		);
+		await expect(page.getByTestId('utc-time').first()).toHaveText(COMPACT_TIME('UTC'));
+		await expect(page.getByTestId('zone-name').first()).toHaveText('UTC');
 	});
 
 	test('custom range submits the raw values, read as UTC', async ({ page }) => {
 		await page.goto('/');
 		await page.getByText('Custom range', { exact: true }).click();
-		await page.getByLabel('From').fill('2026-11-12T08:00');
-		await page.getByLabel('To').fill('2026-11-12T20:30');
+		await page.getByLabel('From', { exact: true }).fill('2026-11-12T08:00');
+		await page.getByLabel('To', { exact: true }).fill('2026-11-12T20:30');
 		await resetRequests();
 		await page.getByRole('button', { name: 'Show range' }).click();
 		await expect(page).toHaveURL(/from=2026-11-12T08%3A00/);
@@ -208,7 +225,7 @@ test('hostile data is shown as text and does not widen the page', async ({ page 
 test('auto-refresh reloads stats every 30 s only while the tab is visible', async ({ page }) => {
 	await page.clock.install();
 	await page.goto('/');
-	await expect(tile(page, 'Delivered').locator('dd')).toHaveText('41');
+	await expect(tileValue(page, 'Delivered')).toHaveText('41');
 	await resetRequests();
 
 	await page.clock.runFor(30_000);
@@ -219,7 +236,14 @@ test('auto-refresh reloads stats every 30 s only while the tab is visible', asyn
 		Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
 		Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
 	});
+	const dataRequests: string[] = [];
+	page.on('request', (r) => {
+		if (r.url().includes('__data.json')) dataRequests.push(r.url());
+	});
 	await page.clock.runFor(30_000);
+	await page.waitForTimeout(500);
+	expect(dataRequests).toEqual([]);
+	expect(await statsRequests()).toEqual([]);
 	await page.evaluate(() => {
 		Object.defineProperty(document, 'visibilityState', {
 			configurable: true,
@@ -235,7 +259,7 @@ test('auto-refresh reloads stats every 30 s only while the tab is visible', asyn
 
 test('the refresh button reloads the data', async ({ page }) => {
 	await page.goto('/');
-	await expect(tile(page, 'Delivered').locator('dd')).toHaveText('41');
+	await expect(tileValue(page, 'Delivered')).toHaveText('41');
 	await resetRequests();
 	await page.getByRole('button', { name: 'Refresh' }).click();
 	await expect.poll(async () => (await statsRequests()).length).toBe(1);
@@ -258,23 +282,27 @@ for (const width of [390, 1280]) {
 	});
 }
 
-test.describe('light scheme', () => {
-	test.use({ colorScheme: 'light' });
+for (const colorScheme of ['light', 'dark'] as const) {
+	test.describe(`${colorScheme} scheme`, () => {
+		test.use({ colorScheme });
 
-	test('no serious or critical axe violations', async ({ page }) => {
-		await page.goto('/');
-		await expect(page.getByTestId('outcome-chart').locator('svg').first()).toBeVisible();
-		const results = await new AxeBuilder({ page }).analyze();
-		const bad = results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
-		expect(bad.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(', ')}`)).toEqual([]);
+		test('no serious or critical axe violations', async ({ page }) => {
+			await page.goto('/');
+			await expect(page.getByTestId('outcome-chart').locator('svg').first()).toBeVisible();
+			const results = await new AxeBuilder({ page }).analyze();
+			const bad = results.violations.filter(
+				(v) => v.impact === 'serious' || v.impact === 'critical'
+			);
+			expect(bad.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(', ')}`)).toEqual([]);
+		});
 	});
-});
+}
 
 test('empty scenario: zero tiles, an empty-chart message and no NaN', async ({ page }) => {
 	await setScenario('empty');
 	await page.goto('/');
 	for (const label of ['Delivered', 'Sent', 'Queued', 'Bounced', 'Failed', 'Retries']) {
-		await expect(tile(page, label).locator('dd')).toHaveText('0');
+		await expect(tileValue(page, label)).toHaveText('0');
 	}
 	await expect(page.getByText('No messages in this range')).toBeVisible();
 	expect(await page.locator('body').innerText()).not.toContain('NaN');
@@ -291,4 +319,98 @@ test('down scenario: each section says the API is not responding; healthz stays 
 	await expect(alerts).toHaveCount(2);
 	await expect(alerts.first().getByRole('link', { name: 'Retry' })).toBeVisible();
 	expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('an open filter sheet keeps its choices and pauses auto-refresh', async ({ page }) => {
+	await page.clock.install();
+	await page.goto('/');
+	await page.getByRole('button', { name: 'Filters', exact: true }).click();
+	const sheet = page.getByRole('dialog');
+	await sheet.getByLabel('Message type').click();
+	await page.getByRole('option', { name: 'SMS' }).click();
+	await sheet.getByLabel('Sender').fill('alerts');
+	await resetRequests();
+	await page.clock.runFor(30_000);
+	await page.waitForTimeout(500);
+	expect(await statsRequests()).toEqual([]);
+	await expect(sheet.getByLabel('Message type')).toHaveText('SMS');
+	await expect(sheet.getByLabel('Sender')).toHaveValue('alerts');
+});
+
+test('state, error type, sender and recipient land in the URL and reach the API', async ({
+	page
+}) => {
+	await page.goto('/');
+	await page.getByRole('button', { name: 'Filters', exact: true }).click();
+	const sheet = page.getByRole('dialog');
+	await sheet.getByLabel('State').click();
+	await page.getByRole('option', { name: 'bounced' }).click();
+	await sheet.getByLabel('Error type').click();
+	await page.getByRole('option', { name: 'timeout' }).click();
+	await sheet.getByLabel('Sender').fill('alerts@');
+	await sheet.getByLabel('Recipient').fill('user1');
+	await resetRequests();
+	await sheet.getByRole('button', { name: 'Apply' }).click();
+	await expect(page).toHaveURL(
+		/\/\?range=1h&state=bounced&error_type=timeout&sender=alerts%40&recipient=user1$/
+	);
+	await expect(page.getByRole('button', { name: 'Filters · 4' })).toBeVisible();
+	const sent = (await statsRequests()).at(-1)?.searchParams;
+	expect(sent?.get('state')).toBe('bounced');
+	expect(sent?.get('error_type')).toBe('timeout');
+	expect(sent?.get('sender')).toBe('alerts@');
+	expect(sent?.get('recipient')).toBe('user1');
+});
+
+test('with facets down, Apply keeps app and error type from the URL', async ({ page }) => {
+	await setScenario('normal', ['facets']);
+	await page.goto('/?app=homelab&error_type=timeout');
+	await page.getByRole('button', { name: 'Filters · 2' }).click();
+	const sheet = page.getByRole('dialog');
+	await expect(sheet.getByRole('alert')).toContainText('The delivery API is not responding');
+	await expect(sheet.getByLabel('Subscriber app')).toHaveValue('homelab');
+	await sheet.getByLabel('Recipient').fill('user1');
+	await sheet.getByRole('button', { name: 'Apply' }).click();
+	await expect(page).toHaveURL(/\/\?range=1h&app=homelab&error_type=timeout&recipient=user1$/);
+});
+
+test('with only stats down, provider usage still renders', async ({ page }) => {
+	await setScenario('normal', ['stats']);
+	await page.goto('/');
+	await expect(
+		page.getByRole('alert').filter({ hasText: 'The delivery API is not responding' })
+	).toHaveCount(1);
+	await expect(page.getByRole('region', { name: 'Provider usage' })).toContainText('47 / 100');
+	await expect(page.getByTestId('stat-tiles')).toHaveCount(0);
+});
+
+test('mixed outcomes: Failed includes expired; legend and pauses use exact values', async ({
+	page
+}) => {
+	await setScenario('mixed');
+	await page.goto('/');
+	await expect(tileValue(page, 'Failed')).toHaveText('5');
+	await expect(tile(page, 'Failed')).toContainText('incl. 3 expired');
+	await expect(tileValue(page, 'Queued')).toHaveText('6');
+
+	const legend = page.getByRole('list', { name: 'Totals' }).getByRole('listitem');
+	await expect(legend).toHaveText([
+		'Delivered 30',
+		'Sent 2',
+		'Bounced 3',
+		'Complained 1',
+		'Failed 2',
+		'Expired 3'
+	]);
+	await expect(page.getByRole('img', { name: /Delivered 30, Sent 2, .*Expired 3/ })).toBeVisible();
+
+	const rows = page.getByRole('region', { name: 'Provider usage' }).getByRole('listitem');
+	const email = rows.filter({ hasText: 'resend' });
+	await expect(email).toContainText('Monthly quota reached');
+	await expect(email).toContainText('4 held');
+	const sms = rows.filter({ hasText: 'fake-sms' });
+	await expect(sms).toContainText('Rate limited');
+	await expect(sms.getByText(/^resumes/)).toBeVisible();
+	await expect(sms).toContainText('12 today');
+	await expect(sms.getByRole('progressbar')).toHaveCount(0);
 });

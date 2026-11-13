@@ -30,7 +30,7 @@
 {#if data.authed}
 	<header class="flex items-center gap-1 border-b px-4 py-2">
 		<h1 class="mr-auto font-semibold"><a href={resolve('/')}>commsgun</a></h1>
-		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- route added by the message list task -->
+		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- keeps the current query -->
 		<a href="/messages{page.url.search}" class={buttonVariants({ variant: 'ghost', size: 'sm' })}
 			>Messages</a
 		>

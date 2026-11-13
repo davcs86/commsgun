@@ -5,8 +5,10 @@ export const STUB_PORT = 4181;
 export const STUB_URL = `http://127.0.0.1:${STUB_PORT}`;
 export const STUB_TOKEN = 'fake-admin-api-token-00000000000000';
 
-export const SCENARIOS = ['normal', 'empty', 'down', 'hostile'] as const;
+export const SCENARIOS = ['normal', 'empty', 'down', 'hostile', 'mixed'] as const;
 export type Scenario = (typeof SCENARIOS)[number];
+export const ENDPOINTS = ['stats', 'overview', 'facets', 'messages'] as const;
+export type Endpoint = (typeof ENDPOINTS)[number];
 
 export const HOSTILE_RECIPIENT = '<script>alert(1)</script>@x.io';
 export const HOSTILE_ERROR = 'E'.repeat(300);
@@ -48,7 +50,18 @@ const NORMAL_TOTALS: Counts & { queued_now: number } = {
 	queued_now: 0
 };
 
-// Bucket size by span, as the real API chooses it (spec 6.7).
+const MIXED_TOTALS: Counts & { queued_now: number } = {
+	enqueued: 40,
+	sent: 2,
+	delivered: 30,
+	bounced: 3,
+	complained: 1,
+	failed: 2,
+	expired: 3,
+	retries: 5,
+	queued_now: 6
+};
+
 function bucketSeconds(spanMs: number): number {
 	const h = spanMs / 3_600_000;
 	if (h <= 1) return 60;
@@ -88,7 +101,12 @@ function stats(scenario: Scenario, query: URLSearchParams, now: number) {
 		t: new Date(from + i * bucket * 1000).toISOString(),
 		...zero()
 	}));
-	const totals = scenario === 'empty' ? { ...zero(), queued_now: 0 } : { ...NORMAL_TOTALS };
+	const totals =
+		scenario === 'empty'
+			? { ...zero(), queued_now: 0 }
+			: scenario === 'mixed'
+				? { ...MIXED_TOTALS }
+				: { ...NORMAL_TOTALS };
 	for (const key of COUNT_KEYS) {
 		for (let k = 0; k < totals[key]; k++) series[(k * 7) % n][key] += 1;
 	}
@@ -120,7 +138,37 @@ function nextUtcMidnight(now: number): string {
 	return new Date(Math.floor(now / DAY) * DAY + DAY).toISOString();
 }
 
+function mixedOverview(now: number) {
+	const resets = nextUtcMidnight(now);
+	const until = new Date(now + 2 * MINUTE).toISOString();
+	return {
+		queue_depth: 6,
+		oldest_waiting_at: new Date(now - 5 * MINUTE).toISOString(),
+		providers: [
+			{
+				channel: 'email',
+				name: 'resend',
+				minute: { used: 1, limit: 10 },
+				day: { used: 20, limit: 100, resets_at: resets },
+				paused_until: resets,
+				pause_reason: 'monthly_quota',
+				held: 4
+			},
+			{
+				channel: 'sms',
+				name: 'fake-sms',
+				minute: { used: 5, limit: 5 },
+				day: { used: 12, limit: 0, resets_at: resets },
+				paused_until: until,
+				pause_reason: 'rate_limit',
+				held: 2
+			}
+		]
+	};
+}
+
 function overview(scenario: Scenario, now: number) {
+	if (scenario === 'mixed') return mixedOverview(now);
 	const resets = nextUtcMidnight(now);
 	const paused = scenario === 'hostile';
 	return {
@@ -250,7 +298,7 @@ function messageDetail(scenario: Scenario, id: string, now: number) {
 	return messageFixtures(scenario, now).find((f) => f.message.id === id);
 }
 
-type State = { scenario: Scenario; requests: string[] };
+type State = { scenario: Scenario; fail: string[]; requests: string[] };
 
 function send(res: ServerResponse, status: number, body?: unknown) {
 	res.writeHead(status, { 'content-type': 'application/json' });
@@ -265,13 +313,13 @@ async function readBody(req: IncomingMessage): Promise<string> {
 
 function handleAdmin(state: State, req: IncomingMessage, res: ServerResponse, url: URL) {
 	state.requests.push(url.pathname + url.search);
-	if (state.scenario === 'down') {
+	const route = url.pathname.slice('/admin/v1/'.length);
+	if (state.scenario === 'down' || state.fail.includes(route.split('/')[0])) {
 		req.socket.destroy();
 		return;
 	}
 	if (req.headers.authorization !== `Bearer ${STUB_TOKEN}`) return send(res, 401);
 	const now = Date.now();
-	const route = url.pathname.slice('/admin/v1/'.length);
 	const s = state.scenario;
 	if (route === 'stats') return send(res, 200, stats(s, url.searchParams, now));
 	if (route === 'overview') return send(res, 200, overview(s, now));
@@ -285,16 +333,17 @@ function handleAdmin(state: State, req: IncomingMessage, res: ServerResponse, ur
 }
 
 export function startStub(port = STUB_PORT) {
-	const state: State = { scenario: 'normal', requests: [] };
+	const state: State = { scenario: 'normal', fail: [], requests: [] };
 	const server = createServer(async (req, res) => {
 		const url = new URL(req.url ?? '/', STUB_URL);
 		if (req.method === 'GET' && url.pathname.startsWith('/admin/v1/')) {
 			return handleAdmin(state, req, res, url);
 		}
 		if (req.method === 'POST' && url.pathname === '/__scenario') {
-			const name = (JSON.parse((await readBody(req)) || '{}') as { name?: string }).name;
-			if (!(SCENARIOS as readonly string[]).includes(name ?? '')) return send(res, 400);
-			state.scenario = name as Scenario;
+			const body = JSON.parse((await readBody(req)) || '{}') as { name?: string; fail?: string[] };
+			if (!(SCENARIOS as readonly string[]).includes(body.name ?? '')) return send(res, 400);
+			state.scenario = body.name as Scenario;
+			state.fail = (body.fail ?? []).filter((e) => (ENDPOINTS as readonly string[]).includes(e));
 			return send(res, 204);
 		}
 		if (req.method === 'GET' && url.pathname === '/__requests') {
@@ -310,10 +359,10 @@ export function startStub(port = STUB_PORT) {
 	return server;
 }
 
-export async function setScenario(name: Scenario): Promise<void> {
+export async function setScenario(name: Scenario, fail: Endpoint[] = []): Promise<void> {
 	const res = await fetch(`${STUB_URL}/__scenario`, {
 		method: 'POST',
-		body: JSON.stringify({ name })
+		body: JSON.stringify({ name, fail })
 	});
 	if (res.status !== 204) throw new Error(`setScenario ${name}: ${res.status}`);
 }

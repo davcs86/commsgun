@@ -35,6 +35,7 @@
 <script lang="ts">
 	import { BarChart } from 'layerchart';
 	import * as Card from '#lib/components/ui/card/index.js';
+	import ZoneName from '#lib/components/ZoneName.svelte';
 	import * as Chart from '#lib/components/ui/chart/index.js';
 	import { bucketLabel } from '#lib/time.js';
 
@@ -42,12 +43,12 @@
 	const id = $props.id();
 
 	const config = {
-		delivered: { label: 'Delivered', color: 'var(--chart-1)' },
-		sent: { label: 'Sent', color: 'var(--chart-2)' },
-		bounced: { label: 'Bounced', color: 'var(--chart-3)' },
-		complained: { label: 'Complained', color: 'var(--chart-4)' },
-		failed: { label: 'Failed', color: 'var(--chart-5)' },
-		expired: { label: 'Expired', color: 'var(--muted-foreground)' }
+		delivered: { label: 'Delivered', color: 'var(--outcome-delivered)' },
+		sent: { label: 'Sent', color: 'var(--outcome-sent)' },
+		bounced: { label: 'Bounced', color: 'var(--outcome-bounced)' },
+		complained: { label: 'Complained', color: 'var(--outcome-complained)' },
+		failed: { label: 'Failed', color: 'var(--outcome-failed)' },
+		expired: { label: 'Expired', color: 'var(--outcome-expired)' }
 	} satisfies Chart.ChartConfig;
 
 	const series = OUTCOMES.map((key) => ({
@@ -57,7 +58,10 @@
 	}));
 
 	const data = $derived(buckets(stats));
-	const empty = $derived(Object.values(stats.totals).every((v) => v === 0));
+	const empty = $derived(OUTCOMES.every((k) => stats.totals[k] === 0));
+	const summary = $derived(
+		`Outcomes per bucket: ${series.map((s) => `${s.label} ${stats.totals[s.key]}`).join(', ')}`
+	);
 	const label = (t: number) => bucketLabel(new Date(t), stats.bucket_seconds);
 </script>
 
@@ -69,7 +73,7 @@
 		{#if empty || data.length === 0}
 			<p class="py-8 text-center text-muted-foreground">No messages in this range</p>
 		{:else}
-			<Chart.Container {config} class="aspect-auto h-56 w-full">
+			<Chart.Container {config} class="aspect-auto h-56 w-full" role="img" aria-label={summary}>
 				<BarChart
 					{data}
 					x="t"
@@ -86,11 +90,16 @@
 					{/snippet}
 				</BarChart>
 			</Chart.Container>
-			<ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+			<p class="mt-1 text-xs text-muted-foreground">Times in <ZoneName /></p>
+			<ul
+				aria-label="Totals"
+				class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground"
+			>
 				{#each series as s (s.key)}
 					<li class="flex items-center gap-1.5">
 						<span class="size-2.5 rounded-[2px]" style:background-color={s.color}></span>
 						{s.label}
+						<span class="font-medium text-foreground tabular-nums">{stats.totals[s.key]}</span>
 					</li>
 				{/each}
 			</ul>

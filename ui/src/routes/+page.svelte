@@ -15,10 +15,14 @@
 	let { data }: PageProps = $props();
 
 	const retryHref = $derived(page.url.pathname + page.url.search);
+	let editing = $state(false);
+	let refreshing = false;
 
 	onMount(() => {
 		const timer = setInterval(() => {
-			if (document.visibilityState === 'visible') invalidateAll();
+			if (document.visibilityState !== 'visible' || editing || refreshing) return;
+			refreshing = true;
+			invalidateAll().finally(() => (refreshing = false));
 		}, REFRESH_INTERVAL_MS);
 		return () => clearInterval(timer);
 	});
@@ -31,7 +35,7 @@
 <main class="mx-auto flex w-full max-w-6xl flex-col gap-4 p-4">
 	<div class="flex flex-col gap-2">
 		<RangeChips filters={data.filters} />
-		<FilterSheet filters={data.filters} facets={data.facets} />
+		<FilterSheet filters={data.filters} facets={data.facets} bind:editing />
 	</div>
 
 	{#if data.stats.ok}

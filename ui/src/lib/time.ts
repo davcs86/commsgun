@@ -36,3 +36,29 @@ export function bucketLabel(d: Date, bucketSeconds: number, timeZone?: string): 
 			: { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
 	return new Intl.DateTimeFormat('en-CA', { timeZone, ...options }).format(d);
 }
+
+// timeZone undefined means the runtime's zone (the browser's).
+export function zoneName(timeZone?: string, at: Date = new Date()): string {
+	const parts = new Intl.DateTimeFormat('en-CA', { timeZone, timeZoneName: 'short' }).formatToParts(
+		at
+	);
+	return parts.find((p) => p.type === 'timeZoneName')?.value ?? '';
+}
+
+export function formatCompact(d: Date, now: Date, timeZone?: string): string {
+	const day = new Intl.DateTimeFormat('en-CA', {
+		timeZone,
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit'
+	});
+	const time = new Intl.DateTimeFormat('en-CA', {
+		timeZone,
+		hour: '2-digit',
+		minute: '2-digit',
+		hourCycle: 'h23'
+	}).format(d);
+	const date = day.format(d);
+	const prefix = date === day.format(now) ? '' : `${date} `;
+	return `${prefix}${time} ${zoneName(timeZone, d)}`;
+}

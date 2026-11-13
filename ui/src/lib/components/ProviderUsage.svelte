@@ -13,8 +13,7 @@
 	};
 
 	const channelLabel = (c: string) => CHANNEL_LABELS[c as keyof typeof CHANNEL_LABELS] ?? c;
-	const percent = (used: number, limit: number) =>
-		limit > 0 ? Math.min(100, Math.max(0, (used / limit) * 100)) : 0;
+	const percent = (used: number, limit: number) => Math.min(100, Math.max(0, (used / limit) * 100));
 </script>
 
 <Card.Root role="region" aria-labelledby={id}>
@@ -34,21 +33,25 @@
 						{/if}
 					</div>
 					{#if p.name !== null}
-						<p class="tabular-nums">{p.day.used} / {p.day.limit} today</p>
-						<div
-							role="progressbar"
-							aria-label="{p.name} daily usage"
-							aria-valuemin={0}
-							aria-valuemax={p.day.limit}
-							aria-valuenow={p.day.used}
-							class="h-2 overflow-hidden rounded-full bg-muted"
-						>
+						{#if p.day.limit > 0}
+							<p class="tabular-nums">{p.day.used} / {p.day.limit} today</p>
 							<div
-								class="h-full rounded-full bg-primary"
-								style:width="{percent(p.day.used, p.day.limit)}%"
-							></div>
-						</div>
-						<p class="text-muted-foreground">resets <LocalTime iso={p.day.resets_at} /></p>
+								role="progressbar"
+								aria-label="{p.name} daily usage"
+								aria-valuemin={0}
+								aria-valuemax={p.day.limit}
+								aria-valuenow={p.day.used}
+								class="h-2 overflow-hidden rounded-full bg-muted"
+							>
+								<div
+									class="h-full rounded-full bg-primary"
+									style:width="{percent(p.day.used, p.day.limit)}%"
+								></div>
+							</div>
+						{:else}
+							<p class="tabular-nums">{p.day.used} today</p>
+						{/if}
+						<p class="text-muted-foreground">resets <LocalTime iso={p.day.resets_at} compact /></p>
 						<p class="text-xs text-muted-foreground tabular-nums">
 							{p.minute.used} / {p.minute.limit} this minute
 						</p>
@@ -56,7 +59,7 @@
 							<p class="font-medium">
 								<span>{PAUSE_REASONS[p.pause_reason] ?? p.pause_reason}</span>
 								{#if p.paused_until}
-									· <span>resumes <LocalTime iso={p.paused_until} /></span>
+									· <span>resumes <LocalTime iso={p.paused_until} compact /></span>
 								{/if}
 							</p>
 						{/if}

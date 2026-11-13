@@ -96,7 +96,8 @@ describe('parseFilters', () => {
 			expect(f.from.toISOString()).toBe('2026-11-12T00:00:00.000Z');
 			expect(f.to.toISOString()).toBe('2026-11-12T06:30:15.000Z');
 		} finally {
-			process.env.TZ = saved;
+			if (saved === undefined) delete process.env.TZ;
+			else process.env.TZ = saved;
 		}
 	});
 
