@@ -5,6 +5,7 @@ export const RANGES = ['1h', '3h', '6h', '12h', '24h', '3d', '7d', '14d', '30d']
 export type RangeKey = (typeof RANGES)[number];
 const MIN_YEAR = 1970;
 const MAX_YEAR = 9999;
+const ZONELESS_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
 
 export const DEFAULT_RANGE: RangeKey = '1h';
 
@@ -36,7 +37,7 @@ function text(value: string | null): string | undefined {
 
 function instant(value: string | null): Date | undefined {
 	if (!value) return undefined;
-	const d = new Date(value);
+	const d = new Date(ZONELESS_DATETIME.test(value) ? `${value}Z` : value);
 	if (Number.isNaN(d.getTime())) return undefined;
 	const year = d.getUTCFullYear();
 	return year < MIN_YEAR || year > MAX_YEAR ? undefined : d;

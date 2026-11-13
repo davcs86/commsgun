@@ -87,6 +87,19 @@ describe('parseFilters', () => {
 		expect(f.to.toISOString()).toBe('2026-11-12T06:00:00.000Z');
 	});
 
+	it('reads zone-less datetime-local values as UTC whatever the server zone', () => {
+		const saved = process.env.TZ;
+		process.env.TZ = 'America/Mexico_City';
+		try {
+			const f = parse('from=2026-11-12T00:00&to=2026-11-12T06:30:15');
+			expect(f.range).toBe('custom');
+			expect(f.from.toISOString()).toBe('2026-11-12T00:00:00.000Z');
+			expect(f.to.toISOString()).toBe('2026-11-12T06:30:15.000Z');
+		} finally {
+			process.env.TZ = saved;
+		}
+	});
+
 	it('clamps a custom range longer than 30 days to 30 days ending at `to`', () => {
 		const f = parse('from=2026-01-01T00:00:00Z&to=2026-11-01T00:00:00Z');
 		expect(f.range).toBe('custom');
