@@ -1,6 +1,7 @@
 # Hello-world probe from the dashboard: design
 
-Status: **awaiting owner approval**. Amends `2026-11-13-commsgun-design.md` (sections 2, 5.16, 6.7, 7.3)
+Status: **approved by the owner** (2026-11-13) and implemented; plan
+`docs/superpowers/plans/2026-11-13-hello-world-probe.md`. Amends `2026-11-13-commsgun-design.md` (sections 2, 5.16, 6.7, 7.3)
 and frozen contract K2.
 
 Items marked **(owner)** were decided by the owner; items marked **(call)** are the designer's choices.
@@ -116,6 +117,8 @@ Content-Type: application/json
 | Queued | 202 | `{"request_id", "message_ids": ["…"], "duplicate": false, "held": <bool>}` |
 | Idempotent repeat | 200 | same, `"duplicate": true` |
 | Invalid destination, channel, JSON, key; no default sender | 422 | `{"error", "field"}` (enqueue's error names) |
+| `provider` key absent | 422 | `{"error": "provider_required", "field": "provider"}` |
+| Body over 4 KiB | 413 | |
 | `ops` lacks the channel | 403 | `{"error": "channel_not_allowed"}` |
 | App `ops` not configured | 409 | `{"error": "probe_app_missing"}` |
 | `provider` differs from the configuration | 409 | `{"error": "provider_mismatch"}` |
@@ -137,8 +140,9 @@ The enqueue listener's behaviour and tests do not change.
 
 - `GET /probe` → the options from `GET /admin/v1/probes`.
 - `POST /probe` → JSON `{channel, to, provider, key}`. It checks that the `Origin` header equals the
-  configured origin (the session cookie is already `SameSite=Strict`), validates the shape and length,
-  then calls the API. It returns a small result: `queued` (message id, held), `invalid` (field),
+  configured origin (the session cookie is already `SameSite=Strict`; a mismatch is a 403), validates
+  the shape (a malformed body is a 400), then calls the API. Like `/login`, it needs the proxy's
+  `X-Forwarded-For` header (contract U2). It returns a small result: `queued` (message id, held), `invalid` (field),
   `rate_limited` (window, retry seconds), `stale` (options changed), `unavailable`, `error`.
 - The API client gains `probeOptions()` and `sendProbe()`; failures log the same fixed-shape line as today.
 
@@ -178,8 +182,9 @@ and label from `sm` up.
 - **Idempotency.** The browser generates a UUID key when the modal opens and a new one whenever a field
   changes or a send succeeds. A retry with unchanged fields reuses the key, so it cannot send twice.
 - **Outcomes**, shown inline in the modal: queued (with a link to `/messages/<id>`, and "held" when
-  applicable); invalid destination (on the field); rate limited ("`ops` minute/day limit reached, retry
+  applicable); invalid destination (on the field, checked in the browser first); rate limited ("`ops` minute/day limit reached, retry
   in …"); stale options (reloads them); unavailable (retry). After a success the page data is refreshed.
+- The modal closes on navigation, so "View message" lands on the detail page.
 
 ### 5.3 Tests
 

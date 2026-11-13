@@ -99,7 +99,7 @@ func SourceIP(r *http.Request) string // the former sourceIP
 
 **Interfaces:**
 - Consumes: `enqueue.Submit`, `enqueue.Outcome`, `enqueue.Failure`, `enqueue.SourceIP`, `enqueue.Enqueuer` (Task 1).
-- Produces: `constants.ProbeMaxBodyBytes = 4 << 10`; `admin.NewHandler(st Store, cfg, clk, log)` where `Store` is an interface the `*store.Store` satisfies (the existing read methods plus `enqueue.Enqueuer`); the HTTP contract in spec 5.1.
+- Produces: `constants.ProbeMaxBodyBytes = 4 << 10`; `admin.NewHandler` keeps its signature (`*store.Store` already satisfies `enqueue.Enqueuer`); the HTTP contract in spec 5.1.
 
 Package constants in `probe.go`: `probeApp = "ops"`, `probeSubject = "commsgun probe"`, `probeText = "Hello world"`, `probeKeyPrefix = "probe:"`.
 
@@ -164,7 +164,7 @@ Constants: `PROBE_DESTINATION_MAX = 320`, `PROBE_KEY = /^[A-Za-z0-9-]{1,64}$/`.
 
 **Interfaces:**
 - Consumes: Task 3's `probe.ts` and API client.
-- Produces: `GET /probe` → 200 `ProbeOptions`, or 503 `{"error":"unavailable"}`; `POST /probe` (JSON `ProbeInput`) → 200 `ProbeResult`; 403 when the `Origin` header is not the configured origin; 400 when `parseProbeInput` returns null or `validDestination` is false is **not** used — an invalid destination returns 200 `{kind:'invalid',field:'to'}` so the modal has one code path.
+- Produces: `GET /probe` → 200 `ProbeOptions`, or 503 `{"error":"unavailable"}`; `POST /probe` (JSON `ProbeInput`) → 200 `ProbeResult`; 403 when the `Origin` header is not the configured origin; 400 when `parseProbeInput` returns null. An invalid destination is not a 400: it returns 200 `{kind:'invalid',field:'to'}` so the modal has one code path.
 
 Dialog behaviour, exactly as spec 5.2. Accessible names the e2e relies on: button `Send probe`; dialog title `Send a hello-world probe`; fields `Message type`, `Provider`, `Destination email` / `Destination phone number`; buttons `Send`, `Cancel`; status region `role="status"` for outcomes. Copy:
 

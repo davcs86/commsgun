@@ -29,7 +29,7 @@
 | # | Contract | Value |
 |---|---|---|
 | K1 | Enqueue listener | container port `9200`: `POST /v1/messages`, `GET /healthz`, `GET /healthz/backlog` |
-| K2 | Admin listener | container port `9201`: `GET /admin/v1/{stats,messages,messages/{id},facets,overview}`, `GET /healthz`; `Authorization: Bearer <ADMIN_API_TOKEN>` |
+| K2 | Admin listener | container port `9201`: `GET /admin/v1/{stats,messages,messages/{id},facets,overview}`, `GET /healthz`; `Authorization: Bearer <ADMIN_API_TOKEN>`. Amended (`2026-11-13-hello-world-probe-design.md`): `GET, POST /admin/v1/probes`, the only admin path that accepts a write |
 | K3 | Env | `COMMSGUN_CONFIG` (JSON, below), `RESEND_API_KEY`, `ADMIN_API_TOKEN`, `DATA_DIR` (default `/data`), `COMMSGUN_ALLOW_FAKE` |
 | K4 | Enqueue request/response | spec 6.2, verbatim |
 | K5 | Body cap | 262144 bytes |

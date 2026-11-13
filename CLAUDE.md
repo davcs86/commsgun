@@ -1,8 +1,8 @@
 # commsgun — CLAUDE.md
 
 Two containers built from one repo. `api/` (Go): enqueue listener 9200, admin listener 9201, SQLite under
-`DATA_DIR` (`/data`), one worker. `ui/` (SvelteKit, Node adapter): read-only admin dashboard on 9202 that
-calls the admin API server-side. Design: `docs/superpowers/specs/2026-11-13-commsgun-design.md`.
+`DATA_DIR` (`/data`), one worker. `ui/` (SvelteKit, Node adapter): admin dashboard on 9202 that
+calls the admin API server-side; read-only except the hello-world probe (`POST /admin/v1/probes`, sent as app `ops`). Design: `docs/superpowers/specs/2026-11-13-commsgun-design.md`.
 
 ## Commands
 
