@@ -203,4 +203,131 @@ describe('createApi', () => {
 			expect(spy).not.toHaveBeenCalled();
 		});
 	});
+
+	describe('sendProbe', () => {
+		const input = {
+			channel: 'email',
+			to: 'me@example.com',
+			provider: 'resend',
+			key: 'key-1'
+		} as const;
+		const ID = '3f2b8c1e-5d4a-4e6f-9a1b-0c2d3e4f5a6b';
+		const send = (res: () => Response | Promise<Response>) =>
+			createApi(env, (async () => res()) as unknown as typeof fetch).sendProbe(
+				input,
+				'203.0.113.7'
+			);
+
+		it('POSTs the probe with the token, the key and the client address', async () => {
+			const fetchFn = vi.fn<(u: string, i?: RequestInit) => Promise<Response>>(async () =>
+				json({ request_id: 'r', message_ids: [ID], duplicate: false, held: false }, 202)
+			);
+			const r = await createApi(env, fetchFn as unknown as typeof fetch).sendProbe(
+				input,
+				'203.0.113.7'
+			);
+			expect(r).toEqual({ kind: 'queued', messageId: ID, held: false });
+			const [url, init] = fetchFn.mock.calls[0];
+			expect(String(url)).toBe('http://api:9201/admin/v1/probes');
+			expect(init?.method).toBe('POST');
+			expect(init?.signal).toBeInstanceOf(AbortSignal);
+			const headers = new Headers(init?.headers);
+			expect(headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+			expect(headers.get('idempotency-key')).toBe('key-1');
+			expect(headers.get('x-forwarded-for')).toBe('203.0.113.7');
+			expect(headers.get('content-type')).toBe('application/json');
+			expect(JSON.parse(String(init?.body))).toEqual({
+				channel: 'email',
+				to: 'me@example.com',
+				provider: 'resend'
+			});
+		});
+
+		it('maps an idempotent repeat and a held message to queued', async () => {
+			const body = { request_id: 'r', message_ids: [ID], duplicate: true, held: true };
+			expect(await send(() => json(body, 200))).toEqual({
+				kind: 'queued',
+				messageId: ID,
+				held: true
+			});
+		});
+
+		it.each([
+			[422, { error: 'invalid_recipient', field: 'to' }, { kind: 'invalid', field: 'to' }],
+			[422, { error: 'sender_required', field: 'from' }, { kind: 'invalid', field: 'from' }],
+			[422, { error: 'invalid_json', field: '' }, { kind: 'invalid', field: 'other' }],
+			[409, { error: 'provider_mismatch' }, { kind: 'stale' }],
+			[409, { error: 'probe_app_missing' }, { kind: 'stale' }],
+			[403, { error: 'channel_not_allowed' }, { kind: 'stale' }],
+			[409, { error: 'idempotency_conflict' }, { kind: 'error' }],
+			[500, { error: 'internal' }, { kind: 'error' }],
+			[401, { error: 'unauthorized' }, { kind: 'error' }],
+			[503, { error: 'unavailable' }, { kind: 'unavailable' }],
+			[202, { request_id: 'r', message_ids: ['../x'] }, { kind: 'error' }],
+			[202, { request_id: 'r', message_ids: [] }, { kind: 'error' }]
+		])('maps %i %j', async (status, body, want) => {
+			expect(await send(() => json(body, status))).toEqual(want);
+		});
+
+		it('maps 429 with its window and Retry-After', async () => {
+			const limited = (window: string, retry?: string) =>
+				send(
+					() =>
+						new Response(JSON.stringify({ error: 'rate_limited', window }), {
+							status: 429,
+							headers: retry === undefined ? {} : { 'retry-after': retry }
+						})
+				);
+			expect(await limited('day', '42')).toEqual({
+				kind: 'rate_limited',
+				window: 'day',
+				retryAfterSeconds: 42
+			});
+			expect(await limited('minute', 'soon')).toEqual({
+				kind: 'rate_limited',
+				window: 'minute',
+				retryAfterSeconds: 1
+			});
+			expect(await limited('minute')).toMatchObject({ retryAfterSeconds: 1 });
+		});
+
+		it('maps a network error, a timeout and an aborted body read to unavailable', async () => {
+			const fail = (e: unknown) =>
+				send(() => {
+					throw e;
+				});
+			expect(await fail(new TypeError('fetch failed'))).toEqual({ kind: 'unavailable' });
+			expect(await fail(new DOMException('timed out', 'TimeoutError'))).toEqual({
+				kind: 'unavailable'
+			});
+			const res = json({}, 202);
+			vi.spyOn(res, 'json').mockRejectedValue(new DOMException('aborted', 'AbortError'));
+			expect(await send(() => res)).toEqual({ kind: 'unavailable' });
+		});
+
+		it('logs a fixed-shape line that never carries the destination, key or token', async () => {
+			await send(() => json({ error: 'internal', to: input.to }, 500));
+			await send(() => {
+				throw new TypeError(`fetch failed for ${input.to}`);
+			});
+			const lines = vi.mocked(console.error).mock.calls.map((c) => String(c[0]));
+			expect(lines.map((l) => JSON.parse(l))).toEqual([
+				{ level: 'error', msg: 'admin api call failed', endpoint: 'probe', status: 500 },
+				{ level: 'error', msg: 'admin api call failed', endpoint: 'probe', status: 'network' }
+			]);
+			for (const banned of [input.to, input.key, TOKEN])
+				expect(lines.join('\n')).not.toContain(banned);
+		});
+	});
+
+	it('probeOptions GETs /admin/v1/probes', async () => {
+		const options = { app: 'ops', available: false, channels: [] };
+		const fetchFn = vi.fn<(u: string, i?: RequestInit) => Promise<Response>>(async () =>
+			json(options)
+		);
+		const r = await createApi(env, fetchFn as unknown as typeof fetch).probeOptions();
+		expect(r).toEqual({ ok: true, data: options });
+		expect(String(fetchFn.mock.calls[0][0])).toBe('http://api:9201/admin/v1/probes');
+		expect(fetchFn.mock.calls[0][1]?.method).toBeUndefined();
+	});
 });

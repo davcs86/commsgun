@@ -37,7 +37,8 @@ manual deploy there.
 **Non-goals (stage one)**
 
 - A status endpoint or callbacks to subscribers: enqueue is fire-and-forget **(owner)**.
-- Dashboard actions (retry, cancel, edit) **(owner)**.
+- Dashboard actions (retry, cancel, edit) **(owner)**. Amended: the one exception is the hello-world
+  probe, `2026-11-13-hello-world-probe-design.md` **(owner)**.
 - Attachments, cc/bcc, templates, scheduled sends.
 - Public ingress of any kind, including provider webhooks.
 - A staging route. Port 8443 is being removed from the edge **(owner)** and the staging VM is denied
@@ -133,7 +134,8 @@ At ≤ 100 emails/day the polling load is negligible.
 14. Message bodies are deleted once a message reaches a final state; recipients and metadata stay
     for the 30 days.
 15. The store is not in the nightly backup.
-16. Dashboard: stats, charts, message list with per-attempt error detail; no actions.
+16. Dashboard: stats, charts, message list with per-attempt error detail; no actions. Amended: one
+    action, the hello-world probe sent as app `ops`.
 17. Login: fixed username `admin`, password from SOPS, session cookie. Times in the browser's
     timezone, UTC as the default.
 18. Alerting: Gatus health checks that fail on a stuck queue; no per-message alert.
@@ -330,7 +332,8 @@ All limits and durations live in one constants file; no literal TTL, cap or limi
 
 ### 6.7 Admin API (internal)
 
-Every request needs `Authorization: Bearer <ADMIN_API_TOKEN>`. Read-only.
+Every request needs `Authorization: Bearer <ADMIN_API_TOKEN>`. Read-only, except `/admin/v1/probes`
+(amended; contract in `2026-11-13-hello-world-probe-design.md` section 5.1).
 
 Common filters: `from`/`to` (UTC instants), `channel`, `app`, `state`, `error_type`, `recipient`,
 `sender` (the last two: case-insensitive substring match).
@@ -341,6 +344,8 @@ Common filters: `from`/`to` (UTC instants), `channel`, `app`, `state`, `error_ty
 | `GET /admin/v1/messages` | Cursor-paged list, newest first, 50 per page; never includes bodies |
 | `GET /admin/v1/messages/{id}` | One message with its attempts |
 | `GET /admin/v1/facets` | The apps, senders and error types that exist, for the filter controls |
+| `GET /admin/v1/probes` | Whether app `ops` exists, its channels, the configured provider and the default sender |
+| `POST /admin/v1/probes` | Queues one fixed "hello world" message as app `ops` through the enqueue path |
 | `GET /admin/v1/overview` | Queue depth, oldest waiting message, each provider's state, usage against its limits, and any pause with its reason and end time |
 
 The requirement's "sending address/number" is read as the **sender**; the recipient filter is added
@@ -405,6 +410,7 @@ Mobile-first: every page is designed at phone width first and widens to a table/
 | `/` | Overview: quick ranges, filters, totals, time-series chart, breakdowns, provider usage |
 | `/messages` | The message list under the same filters |
 | `/messages/[id]` | One message: metadata, state timeline, attempts with error detail. No body |
+| `/probe` | JSON endpoint behind the session for the header's "Send probe" dialog (amended) |
 | `/healthz` | Unauthenticated liveness for Gatus |
 
 Phone-width sketch of the overview:

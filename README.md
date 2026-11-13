@@ -2,7 +2,7 @@
 
 A small email and SMS delivery hub for a homelab. Apps POST a message to one HTTP endpoint; commsgun queues
 it durably in SQLite, sends it through a provider within the app and provider rate limits, tracks bounces,
-and shows the outcome on a read-only dashboard.
+and shows the outcome on a dashboard. The dashboard is read-only except for one action: a fixed "hello world" probe sent as app `ops`.
 
 Two images, built from this repo:
 

@@ -319,7 +319,70 @@ function messageDetail(scenario: Scenario, id: string, now: number) {
 	return messageFixtures(scenario, now).find((f) => f.message.id === id);
 }
 
-type State = { scenario: Scenario; fail: string[]; requests: string[] };
+export const PROBE_MODES = ['normal', 'missing', 'mismatch', 'nosender'] as const;
+export type ProbeMode = (typeof PROBE_MODES)[number];
+export type ReceivedProbe = { key: string; body: unknown; forwardedFor: string };
+export const PROBE_SENDER = 'Ops <ops@example.com>';
+export const PROBE_LIMITED = 'limited@example.com';
+export const PROBE_EMAIL_ID = 'msg-0001';
+export const PROBE_SMS_ID = 'msg-0005';
+
+type State = {
+	scenario: Scenario;
+	fail: string[];
+	requests: string[];
+	probeMode: ProbeMode;
+	probes: ReceivedProbe[];
+};
+
+function probeOptions(mode: ProbeMode) {
+	if (mode === 'missing') return { app: 'ops', available: false, channels: [] };
+	return {
+		app: 'ops',
+		available: true,
+		channels: [
+			{
+				channel: 'email',
+				enabled: true,
+				provider: mode === 'mismatch' ? 'other' : 'resend',
+				sender: mode === 'nosender' ? null : PROBE_SENDER
+			},
+			{ channel: 'sms', enabled: true, provider: null, sender: null }
+		]
+	};
+}
+
+// Mirrors the API's result table closely enough for the dashboard's mapping to be exercised.
+async function handleProbe(state: State, req: IncomingMessage, res: ServerResponse) {
+	const key = String(req.headers['idempotency-key'] ?? '');
+	const body = JSON.parse((await readBody(req)) || '{}') as Record<string, unknown>;
+	const { channel, to, provider } = body;
+	const mismatch = state.probeMode === 'mismatch';
+	const want = channel !== 'email' ? null : mismatch ? 'other' : 'resend';
+	if (state.probeMode === 'missing') return send(res, 409, { error: 'probe_app_missing' });
+	if (provider !== want) return send(res, 409, { error: 'provider_mismatch' });
+	if (state.probeMode === 'nosender' && channel === 'email') {
+		return send(res, 422, { error: 'sender_required', field: 'from' });
+	}
+	const valid =
+		typeof to === 'string' &&
+		(channel === 'sms' ? /^\+[1-9][0-9]{1,14}$/ : /^[^\s<>@]+@[^\s<>@]+$/).test(to);
+	if (!valid) return send(res, 422, { error: 'invalid_recipient', field: 'to' });
+	if (to === PROBE_LIMITED) {
+		res.setHeader('retry-after', '42');
+		return send(res, 429, { error: 'rate_limited', window: 'minute' });
+	}
+	const duplicate = state.probes.some((p) => p.key === key);
+	if (!duplicate) {
+		state.probes.push({ key, body, forwardedFor: String(req.headers['x-forwarded-for'] ?? '') });
+	}
+	return send(res, duplicate ? 200 : 202, {
+		request_id: 'req-probe',
+		message_ids: [channel === 'sms' ? PROBE_SMS_ID : PROBE_EMAIL_ID],
+		duplicate,
+		held: channel === 'sms'
+	});
+}
 
 function send(res: ServerResponse, status: number, body?: unknown) {
 	res.writeHead(status, { 'content-type': 'application/json' });
@@ -342,6 +405,7 @@ function handleAdmin(state: State, req: IncomingMessage, res: ServerResponse, ur
 	if (req.headers.authorization !== `Bearer ${STUB_TOKEN}`) return send(res, 401);
 	const now = Date.now();
 	const s = state.scenario;
+	if (route === 'probes') return send(res, 200, probeOptions(state.probeMode));
 	if (route === 'stats') return send(res, 200, stats(s, url.searchParams, now));
 	if (route === 'overview') return send(res, 200, overview(s, now));
 	if (route === 'facets') return send(res, 200, facets(s));
@@ -357,17 +421,40 @@ function handleAdmin(state: State, req: IncomingMessage, res: ServerResponse, ur
 }
 
 export function startStub(port = STUB_PORT) {
-	const state: State = { scenario: 'normal', fail: [], requests: [] };
+	const state: State = {
+		scenario: 'normal',
+		fail: [],
+		requests: [],
+		probeMode: 'normal',
+		probes: []
+	};
 	const server = createServer(async (req, res) => {
 		const url = new URL(req.url ?? '/', STUB_URL);
 		if (req.method === 'GET' && url.pathname.startsWith('/admin/v1/')) {
 			return handleAdmin(state, req, res, url);
+		}
+		if (req.method === 'POST' && url.pathname === '/admin/v1/probes') {
+			state.requests.push(url.pathname);
+			if (state.scenario === 'down') return void req.socket.destroy();
+			if (req.headers.authorization !== `Bearer ${STUB_TOKEN}`) return send(res, 401);
+			return handleProbe(state, req, res);
+		}
+		if (req.method === 'POST' && url.pathname === '/__probe-mode') {
+			const body = JSON.parse((await readBody(req)) || '{}') as { mode?: string };
+			if (!(PROBE_MODES as readonly string[]).includes(body.mode ?? '')) return send(res, 400);
+			state.probeMode = body.mode as ProbeMode;
+			return send(res, 204);
+		}
+		if (req.method === 'GET' && url.pathname === '/__probes') {
+			return send(res, 200, state.probes);
 		}
 		if (req.method === 'POST' && url.pathname === '/__scenario') {
 			const body = JSON.parse((await readBody(req)) || '{}') as { name?: string; fail?: string[] };
 			if (!(SCENARIOS as readonly string[]).includes(body.name ?? '')) return send(res, 400);
 			state.scenario = body.name as Scenario;
 			state.fail = (body.fail ?? []).filter((e) => (ENDPOINTS as readonly string[]).includes(e));
+			state.probeMode = 'normal';
+			state.probes = [];
 			return send(res, 204);
 		}
 		if (req.method === 'GET' && url.pathname === '/__requests') {
@@ -389,6 +476,18 @@ export async function setScenario(name: Scenario, fail: Endpoint[] = []): Promis
 		body: JSON.stringify({ name, fail })
 	});
 	if (res.status !== 204) throw new Error(`setScenario ${name}: ${res.status}`);
+}
+
+export async function setProbeMode(mode: ProbeMode): Promise<void> {
+	const res = await fetch(`${STUB_URL}/__probe-mode`, {
+		method: 'POST',
+		body: JSON.stringify({ mode })
+	});
+	if (res.status !== 204) throw new Error(`setProbeMode ${mode}: ${res.status}`);
+}
+
+export async function receivedProbes(): Promise<ReceivedProbe[]> {
+	return (await (await fetch(`${STUB_URL}/__probes`)).json()) as ReceivedProbe[];
 }
 
 export async function receivedRequests(): Promise<URL[]> {

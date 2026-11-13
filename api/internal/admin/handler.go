@@ -1,4 +1,4 @@
-// Package admin serves the read-only, bearer-protected admin API under /admin/v1.
+// Package admin serves the bearer-protected admin API under /admin/v1; only /probes accepts a write.
 package admin
 
 import (
@@ -47,6 +47,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.authorized(r) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": errUnauth})
+		return
+	}
+	if rest == "probes" {
+		h.probes(w, r)
 		return
 	}
 	if r.Method != http.MethodGet {

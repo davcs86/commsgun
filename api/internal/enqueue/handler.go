@@ -3,13 +3,10 @@ package enqueue
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"math"
-	"net"
 	"net/http"
-	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
@@ -114,65 +111,16 @@ func (h *handler) serve(w *statusWriter, r *http.Request, now time.Time, info *l
 	}
 	info.app = app.ID
 
-	key := r.Header.Get(headerKey)
-	switch {
-	case key == "":
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": errKeyRequired, "field": headerKey})
-		return
-	case len(key) > constants.IdempotencyKeyMaxLen || !keyPattern.MatchString(key):
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": errInvalidKey, "field": headerKey})
-		return
-	}
-
-	req, hash, verr := parse(body)
-	if verr != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": verr.Message, "field": verr.Field})
-		return
-	}
-
-	prev, res, found, err := h.st.LookupRequest(r.Context(), app.ID, key)
-	if err != nil {
-		h.storeError(w, err)
-		return
-	}
-	if found {
-		if prev != hash {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": errIdemConflict})
-			return
+	out, fail := Submit(r.Context(), h.cfg, h.st, now, app, r.Header.Get(headerKey), body, SourceIP(r))
+	info.channel, info.recipients, info.requestID = string(out.Channel), out.Recipients, out.Result.RequestID
+	if fail != nil {
+		if fail.Status == http.StatusInternalServerError {
+			h.log.Error("enqueue store failure")
 		}
-		info.requestID = res.RequestID
-		writeAccepted(w, res)
+		WriteFailure(w, fail)
 		return
 	}
-
-	in, verr := validateRequest(app, &req, hash, now)
-	if verr != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": verr.Message, "field": verr.Field})
-		return
-	}
-	info.channel, info.recipients = string(in.Channel), len(in.Recipients)
-	cc, enabled := app.Channels[in.Channel]
-	if !enabled {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": errNotAllowed})
-		return
-	}
-
-	in.IdempotencyKey = key
-	in.SourceIP = sourceIP(r)
-	in.PerMinute, in.PerDay = cc.PerMinute, cc.PerDay
-	if p := h.cfg.Providers[in.Channel]; p != nil {
-		in.Provider = p.Name
-	} else {
-		in.Held = true
-	}
-
-	res, err = h.st.Enqueue(r.Context(), now, *in)
-	if err != nil {
-		h.storeError(w, err)
-		return
-	}
-	info.requestID = res.RequestID
-	writeAccepted(w, res)
+	writeAccepted(w, out.Result)
 }
 
 func writeAccepted(w http.ResponseWriter, res store.EnqueueResult) {
@@ -189,22 +137,6 @@ func writeAccepted(w http.ResponseWriter, res store.EnqueueResult) {
 		MessageIDs []string `json:"message_ids"`
 		Duplicate  bool     `json:"duplicate"`
 	}{res.RequestID, ids, res.Duplicate})
-}
-
-func (h *handler) storeError(w http.ResponseWriter, err error) {
-	var rl *store.RateLimitedError
-	switch {
-	case errors.Is(err, store.ErrIdempotencyConflict):
-		writeJSON(w, http.StatusConflict, map[string]string{"error": errIdemConflict})
-	case errors.As(err, &rl):
-		w.Header().Set("Retry-After", retryAfterSeconds(rl.RetryAfter))
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": errRateLimited, "window": rl.Window})
-	case errors.Is(err, store.ErrQueueFull), errors.Is(err, store.ErrBusy):
-		unavailable(w)
-	default:
-		h.log.Error("enqueue store failure")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": errInternal})
-	}
 }
 
 // retryAfterSeconds rounds up and never advertises less than RetryAfterBusy.
@@ -230,16 +162,4 @@ func bearer(r *http.Request) string {
 		return h[len(bearerPrefix):]
 	}
 	return ""
-}
-
-func sourceIP(r *http.Request) string {
-	first, _, _ := strings.Cut(r.Header.Get("X-Forwarded-For"), ",")
-	if a, err := netip.ParseAddr(strings.TrimSpace(first)); err == nil {
-		return a.String()
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }

@@ -18,6 +18,7 @@ VOLUME="commsgun-smoke-${SUFFIX}"
 WORK="$(mktemp -d)"
 
 APP_KEY="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+OPS_KEY="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 ADMIN_API_TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 SESSION_SECRET="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 ADMIN_PASSWORD="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -29,11 +30,15 @@ FORWARDED_HOST="localhost:${UI_PORT}"
 
 RCPT_A="smoke-a@example.com"
 RCPT_B="smoke-b@example.com"
+RCPT_PROBE="smoke-probe@example.com"
 SENDER="Smoke <smoke@example.com>"
+OPS_SENDER="Ops <ops@example.com>"
 
 CONFIG='{"apps":[{"id":"smoke","key":"'"$APP_KEY"'","channels":{
   "email":{"per_minute":10,"per_day":80,"senders":["'"$SENDER"'"],"default_sender":"'"$SENDER"'"},
-  "sms":{"per_minute":5,"per_day":50}}}],
+  "sms":{"per_minute":5,"per_day":50}}},
+ {"id":"ops","key":"'"$OPS_KEY"'","channels":{
+  "email":{"per_minute":2,"per_day":5,"senders":["'"$OPS_SENDER"'"],"default_sender":"'"$OPS_SENDER"'"}}}],
  "providers":{"email":{"name":"fake","per_minute":60,"per_day":100},"sms":null}}'
 
 cleanup() {
@@ -184,6 +189,31 @@ wait_for() { # name function
 
 wait_for "ui lists both recipients as sent" sent_page_lists_both
 wait_for "ui overview shows the held sms" overview_shows_held
+
+probe() { # origin -> prints "<body>\n<status>"; the key is fixed, so a repeat must not send again
+  ui_curl -w '\n%{http_code}' -X POST "$UI_URL/probe" \
+    -H "Cookie: commsgun_session=${SESSION}" -H "Origin: $1" -H 'Content-Type: application/json' \
+    -d '{"channel":"email","to":"'"$RCPT_PROBE"'","provider":"fake","key":"smoke-probe-1"}'
+}
+
+probe_is_sent() {
+  case "$(ui_page '/messages?state=sent&app=ops' || true)" in
+    *"$RCPT_PROBE"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+out="$(probe 'https://evil.example' || true)"
+expect_eq "probe from another origin is 403" 403 "${out##*$'\n'}"
+for attempt in first repeated; do
+  out="$(probe "$ORIGIN" || true)"
+  expect_eq "$attempt probe answers 200" 200 "${out##*$'\n'}"
+  case "$out" in
+    *'"kind":"queued"'*) pass "$attempt probe is queued" ;;
+    *) fail "$attempt probe is queued" "body lacks \"kind\":\"queued\"" ;;
+  esac
+done
+wait_for "ui lists the probe as sent by app ops" probe_is_sent
 
 # The post-restart process is fresh, so the ceiling applies to the larger of the two readings.
 api_mem_before="$(mem_mib "$API")"
