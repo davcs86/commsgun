@@ -44,9 +44,9 @@ func TestResendRequestShapeAndAccepted(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&got)
 		io.WriteString(w, `{"id":"x"}`)
 	}))
-	defer srv.Close()
 	r := NewResend("secret", srv.Client(), srv.URL)
 	res := r.Send(context.Background(), msg, Body{Subject: "hi", Text: "t", ReplyTo: "r@ex.org"})
+	srv.Close()
 	if res.Outcome != Accepted || res.ProviderID != "x" {
 		t.Fatalf("%+v", res)
 	}
@@ -225,7 +225,7 @@ func TestResendResponseBodyIsCapped(t *testing.T) {
 	big := `{"id":"` + strings.Repeat("a", constants.ProviderResponseMaxBytes) + `"}`
 	r, _ := serve(t, 200, big, nil)
 	res := r.Send(context.Background(), msg, Body{})
-	if res.Outcome != Retryable {
+	if res.Outcome != Retryable || res.ErrorType != model.ErrProviderUnavailable || res.ProviderID != "" {
 		t.Fatalf("oversized body must not parse: %+v", res)
 	}
 }
@@ -270,5 +270,27 @@ func TestResendStatusErrors(t *testing.T) {
 	r, _ = serve(t, 200, "not json", nil)
 	if _, err := r.Status(context.Background(), "pid"); err == nil {
 		t.Fatal("want error on bad json")
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	cases := map[string]time.Duration{
+		"3": 3 * time.Second, "": constants.RateLimitDefaultPause, "abc": constants.RateLimitDefaultPause,
+		"0": constants.RateLimitDefaultPause, "-5": constants.RateLimitDefaultPause,
+		"99999999999999999999": constants.RateLimitDefaultPause,
+		"9223372036854775807":  constants.RateLimitMaxPause,
+		"3600":                 constants.RateLimitMaxPause, "3601": constants.RateLimitMaxPause,
+	}
+	for in, want := range cases {
+		if got := parseRetryAfter(in); got != want {
+			t.Errorf("%q: got %v want %v", in, got, want)
+		}
+	}
+}
+
+func TestSafeMessageRedactsUnicodeAddresses(t *testing.T) {
+	got := safeMessage("bad josé@example.com and bob@例え.jp end")
+	if strings.Contains(got, "@") || strings.Contains(got, "josé") || strings.Contains(got, "例え") {
+		t.Fatalf("%q", got)
 	}
 }

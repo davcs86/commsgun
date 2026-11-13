@@ -32,6 +32,8 @@ const (
 	RetryAfterBusy       = time.Second
 
 	ProviderResponseMaxBytes = 64 << 10
+	RateLimitDefaultPause    = time.Second
+	RateLimitMaxPause        = time.Hour
 )
 
 // PollSchedule lists bounce-poll offsets from sent_at; callers must not mutate it.

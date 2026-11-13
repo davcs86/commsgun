@@ -58,7 +58,7 @@ type StatusChecker interface {
 	Status(ctx context.Context, providerID string) (DeliveryStatus, error)
 }
 
-var addressPattern = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*`)
+var addressPattern = regexp.MustCompile(`[\p{L}\p{N}._%+\-]+@[\p{L}\p{N}\-]+(?:\.[\p{L}\p{N}\-]+)*`)
 
 // safeMessage strips email addresses, then truncates on a rune boundary.
 func safeMessage(s string) string {

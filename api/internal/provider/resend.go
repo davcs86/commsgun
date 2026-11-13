@@ -20,8 +20,6 @@ import (
 
 const defaultResendURL = "https://api.resend.com"
 
-const defaultRetryAfter = time.Second
-
 type Resend struct {
 	apiKey  string
 	hc      *http.Client
@@ -161,9 +159,12 @@ func namesToField(msg string) bool {
 }
 
 func parseRetryAfter(v string) time.Duration {
-	n, err := strconv.Atoi(strings.TrimSpace(v))
+	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
 	if err != nil || n <= 0 {
-		return defaultRetryAfter
+		return constants.RateLimitDefaultPause
+	}
+	if n > int64(constants.RateLimitMaxPause/time.Second) {
+		return constants.RateLimitMaxPause
 	}
 	return time.Duration(n) * time.Second
 }
