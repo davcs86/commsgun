@@ -35,6 +35,12 @@ const (
 	MinuteCounterMaxAge  = time.Hour
 	DayCounterMaxAge     = 48 * time.Hour
 
+	ReadHeaderTimeout = 5 * time.Second
+	ReadTimeout       = 15 * time.Second
+	WriteTimeout      = 30 * time.Second
+	ShutdownTimeout   = 10 * time.Second
+	HTTPClientTimeout = 20 * time.Second
+
 	ProviderResponseMaxBytes = 64 << 10
 	RateLimitDefaultPause    = time.Second
 	RateLimitMaxPause        = time.Hour
