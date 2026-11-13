@@ -49,6 +49,7 @@ const (
 	AdminMaxRange     = 31 * 24 * time.Hour
 	AdminFilterMaxLen = 200
 	AdminFacetCap     = 200
+	ProbeMaxBodyBytes = 4 << 10
 
 	// IdempotencySafetyMargin keeps every send inside the provider's 24 h idempotency memory.
 	IdempotencySafetyMargin = 5 * time.Minute
