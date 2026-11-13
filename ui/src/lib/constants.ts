@@ -13,3 +13,4 @@ export const RANGE_SECONDS = {
 	'14d': 14 * 86400,
 	'30d': 30 * 86400
 } as const;
+export const REFRESH_INTERVAL_MS = 30_000;

@@ -1,5 +1,6 @@
 export const CHANNELS = ['email', 'sms'] as const;
 export type Channel = (typeof CHANNELS)[number];
+export const CHANNEL_LABELS: Record<Channel, string> = { email: 'Email', sms: 'SMS' };
 
 export const STATES = [
 	'queued',
