@@ -29,6 +29,11 @@ jobs:
           echo "$out"
           test -z "$out"
       - run: go vet ./...
+      - name: staticcheck
+        # Built with the module's Go: an older toolchain cannot load go1.27 packages.
+        env:
+          GOTOOLCHAIN: local
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
       - run: go test ./... -race
 
   ui:
@@ -57,9 +62,16 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - run: shellcheck scripts/smoke.sh
       - run: docker build --label "org.opencontainers.image.revision=${GITHUB_SHA}" -t commsgun-api:ci api
       - run: docker build --label "org.opencontainers.image.revision=${GITHUB_SHA}" -t commsgun-ui:ci ui
-      - run: shellcheck scripts/smoke.sh
+      - name: Images carry this commit as their revision label
+        run: |
+          for name in api ui; do
+            rev="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "commsgun-${name}:ci")"
+            echo "commsgun-${name}: ${rev}"
+            test "$rev" = "$GITHUB_SHA"
+          done
       - run: scripts/smoke.sh commsgun-api:ci commsgun-ui:ci
       - name: Push to GHCR and print the digests
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -71,6 +83,10 @@ jobs:
             ref="ghcr.io/davcs86/commsgun-${name}:${GITHUB_SHA}"
             docker tag "commsgun-${name}:ci" "$ref"
             docker push "$ref"
+          done
+          # Both :<sha> tags exist before either moving :main tag points at them.
+          for name in api ui; do
+            ref="ghcr.io/davcs86/commsgun-${name}:${GITHUB_SHA}"
             # Moving tag: deployments pin by digest and use this only to discover the newest build.
             docker tag "commsgun-${name}:ci" "ghcr.io/davcs86/commsgun-${name}:main"
             docker push "ghcr.io/davcs86/commsgun-${name}:main"

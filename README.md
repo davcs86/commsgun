@@ -36,7 +36,7 @@ after enqueue.
 | 403 | channel not enabled for this app |
 | 409 | key reused with a different body |
 | 413 | body over 256 KiB |
-| 422 | invalid body, sender not allowed, bad recipient |
+| 422 | invalid body, sender not allowed, bad recipient; an unknown field is `{"error":"unknown_field","field":"<name>"}` |
 | 429 | app over its per-minute or per-day limit; `Retry-After` |
 | 503 | too many requests in flight or queue full; `Retry-After`, retry with the same key |
 
@@ -55,7 +55,8 @@ API (`ghcr.io/davcs86/commsgun-api`):
 | `DATA_DIR` | SQLite directory, default `/data` (the only writable path) |
 | `COMMSGUN_ALLOW_FAKE` | `1` permits the `fake` provider (tests and smoke only) |
 
-The process refuses to start on an invalid config.
+The process refuses to start on an invalid config, including an app key or `ADMIN_API_TOKEN` shorter than 32
+characters.
 
 Dashboard (`ghcr.io/davcs86/commsgun-ui`):
 
@@ -67,6 +68,11 @@ Dashboard (`ghcr.io/davcs86/commsgun-ui`):
 | `API_BASE_URL` | The admin listener, for example `http://commsgun-api:9201` |
 | `ORIGIN` | The dashboard's public origin; any other derived origin gets 400 (except `/healthz`) |
 | `PORT` | Default 9202 |
+
+The dashboard refuses to start when `ADMIN_PASSWORD`, `SESSION_SECRET` or `ADMIN_API_TOKEN` is shorter than its
+minimum. Changing `ADMIN_PASSWORD` or `SESSION_SECRET` signs everyone out. On the dashboard, **Sent** counts
+messages the provider accepted in the range; **Delivered**, **Bounced** and the other outcomes are confirmed later
+and counted by when that happened, so the chart stacks only those final outcomes.
 
 The image sets `PROTOCOL_HEADER`, `HOST_HEADER`, `ADDRESS_HEADER` and `XFF_DEPTH` so the origin and client address
 come from `X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Forwarded-For`. Put the dashboard behind a reverse proxy

@@ -7,7 +7,8 @@ calls the admin API server-side. Design: `docs/superpowers/specs/2026-11-13-comm
 ## Commands
 
 - API: `cd api && gofmt -l . && go vet ./... && go test ./... -race` (`gofmt -l` must print nothing)
-- UI: `cd ui && pnpm check && pnpm lint && pnpm test && pnpm test:e2e` (e2e uses fixed ports 4173 and the stub API)
+- UI: `cd ui && pnpm check && pnpm lint && pnpm test && pnpm test:e2e` (e2e uses fixed ports 4173 for the dashboard
+  and 4181 for the stub API; on a fresh machine run `pnpm exec playwright install chromium` first)
 - Images and smoke (needs Docker): `docker build -t commsgun-api:dev api && docker build -t commsgun-ui:dev ui`
   then `scripts/smoke.sh commsgun-api:dev commsgun-ui:dev`
 

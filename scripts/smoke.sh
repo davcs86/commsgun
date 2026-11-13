@@ -85,8 +85,8 @@ enqueue() { # idempotency-key key body -> prints "<body>\n<status>"
     -H "Idempotency-Key: $1" -H 'Content-Type: application/json' -d "$3"
 }
 
-mem_mib() { # container -> resident MiB (integer, rounded up)
-  docker stats --no-stream --format '{{.MemUsage}}' "$1" | awk '{
+mem_mib() { # container -> resident MiB (integer, rounded up; 99999 when unreadable)
+  { docker stats --no-stream --format '{{.MemUsage}}' "$1" || echo '? ?'; } | awk '{
     v = $1; u = v; sub(/[0-9.]+/, "", u); sub(/[A-Za-z]+$/, "", v)
     if (u == "B") v /= 1048576; else if (u == "KiB") v /= 1024
     else if (u == "GiB") v *= 1024; else if (u != "MiB") v = 99999
@@ -121,35 +121,35 @@ wait_ok "api healthz" "$ENQUEUE/healthz"
 wait_ok "ui healthz" "$UI_URL/healthz"
 
 email_body='{"channel":"email","to":["'"$RCPT_A"'","'"$RCPT_B"'"],"subject":"smoke","text":"smoke"}'
-out="$(enqueue smoke-1 "$APP_KEY" "$email_body")"
+out="$(enqueue smoke-1 "$APP_KEY" "$email_body" || true)"
 expect_eq "enqueue email 202" 202 "${out##*$'\n'}"
-out="$(enqueue smoke-1 "$APP_KEY" "$email_body")"
+out="$(enqueue smoke-1 "$APP_KEY" "$email_body" || true)"
 expect_eq "idempotent repeat 200" 200 "${out##*$'\n'}"
 case "$out" in
   *'"duplicate":true'*) pass "idempotent repeat is a duplicate" ;;
   *) fail "idempotent repeat is a duplicate" "body lacks \"duplicate\":true" ;;
 esac
-out="$(enqueue smoke-2 "wrong-${APP_KEY}" "$email_body")"
+out="$(enqueue smoke-2 "wrong-${APP_KEY}" "$email_body" || true)"
 expect_eq "wrong key 401" 401 "${out##*$'\n'}"
-out="$(enqueue smoke-3 "$APP_KEY" '{"channel":"sms","to":["+15551234567"],"body":"smoke"}')"
+out="$(enqueue smoke-3 "$APP_KEY" '{"channel":"sms","to":["+15551234567"],"body":"smoke"}' || true)"
 expect_eq "enqueue sms 202" 202 "${out##*$'\n'}"
 
-code="$(ui_curl -o /dev/null -w '%{http_code}' "$UI_URL/")"
+code="$(ui_curl -o /dev/null -w '%{http_code}' "$UI_URL/" || true)"
 expect_eq "ui unauthenticated GET / is 303" 303 "$code"
-location="$(ui_curl -o /dev/null -w '%{redirect_url}' "$UI_URL/")"
+location="$(ui_curl -o /dev/null -w '%{redirect_url}' "$UI_URL/" || true)"
 case "$location" in
   */login*) pass "ui redirects to /login" ;;
   *) fail "ui redirects to /login" "Location was $location" ;;
 esac
 
-code="$(curl -sS -o /dev/null -w '%{http_code}' "$ENQUEUE/admin/v1/stats")"
+code="$(curl -sS -o /dev/null -w '%{http_code}' "$ENQUEUE/admin/v1/stats" || true)"
 expect_eq "admin API not on enqueue port" 404 "$code"
 
 ui_curl -D "$WORK/login.headers" -o /dev/null -X POST "$UI_URL/login" \
   -H "Origin: ${ORIGIN}" --data-urlencode 'username=admin' \
-  --data-urlencode "password=${ADMIN_PASSWORD}"
-SESSION="$(grep -i '^set-cookie: commsgun_session=' "$WORK/login.headers" |
-  sed -E 's/^[^=]*=([^;]*).*/\1/' | tr -d '\r')"
+  --data-urlencode "password=${ADMIN_PASSWORD}" || true
+SESSION="$({ grep -i '^set-cookie: commsgun_session=' "$WORK/login.headers" |
+  sed -E 's/^[^=]*=([^;]*).*/\1/' | tr -d '\r'; } || true)"
 [ -n "$SESSION" ] || fail "ui login" "no commsgun_session cookie in the response"
 pass "ui login"
 
@@ -185,23 +185,29 @@ wait_for() { # name function
 wait_for "ui lists both recipients as sent" sent_page_lists_both
 wait_for "ui overview shows the held sms" overview_shows_held
 
+# The post-restart process is fresh, so the ceiling applies to the larger of the two readings.
+api_mem_before="$(mem_mib "$API")"
+ui_mem_before="$(mem_mib "$UI")"
+
 docker restart "$API" >/dev/null
 wait_ok "api healthz after restart" "$ENQUEUE/healthz"
 wait_for "sent messages persisted across api restart" sent_page_lists_both
 
 for c in "$API" "$UI"; do
-  rd="$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$c")"
+  rd="$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$c" || true)"
   expect_eq "read-only rootfs $c" true "$rd"
 done
-api_user="$(docker inspect --format '{{.Config.User}}' "$API")"
+api_user="$(docker inspect --format '{{.Config.User}}' "$API" || true)"
 expect_eq "api user" 10001:10001 "$api_user"
-ui_uid="$(docker exec "$UI" id -u)"
+ui_uid="$(docker exec "$UI" id -u || true)"
 expect_eq "ui uid" 10001 "$ui_uid"
 
-api_mem="$(mem_mib "$API")"
-ui_mem="$(mem_mib "$UI")"
-echo "memory api: ${api_mem} MiB (limit ${API_MEM_LIMIT_MIB})"
-echo "memory ui:  ${ui_mem} MiB (limit ${UI_MEM_LIMIT_MIB})"
+api_mem_after="$(mem_mib "$API")"
+ui_mem_after="$(mem_mib "$UI")"
+api_mem=$((api_mem_before > api_mem_after ? api_mem_before : api_mem_after))
+ui_mem=$((ui_mem_before > ui_mem_after ? ui_mem_before : ui_mem_after))
+echo "memory api: before restart ${api_mem_before} MiB, after ${api_mem_after} MiB (limit ${API_MEM_LIMIT_MIB})"
+echo "memory ui:  before api restart ${ui_mem_before} MiB, after ${ui_mem_after} MiB (limit ${UI_MEM_LIMIT_MIB})"
 if [ "$api_mem" -le "$API_MEM_LIMIT_MIB" ]; then pass "api memory"; else fail "api memory" "${api_mem} MiB"; fi
 if [ "$ui_mem" -le "$UI_MEM_LIMIT_MIB" ]; then pass "ui memory"; else fail "ui memory" "${ui_mem} MiB"; fi
 

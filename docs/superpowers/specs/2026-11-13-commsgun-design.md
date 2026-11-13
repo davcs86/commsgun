@@ -215,6 +215,7 @@ Rules:
 | Key reused with a different body | 409 | `{"error": "idempotency_conflict"}` |
 | Too large | 413 | |
 | Invalid body, sender not allowed, bad recipient | 422 | `{"error": "...", "field": "..."}` |
+| Unknown request field (e.g. a misspelt `expire_at`, or `cc`) | 422 | `{"error": "unknown_field", "field": "<name>"}` |
 | App over its per-minute or per-day limit | 429 | `Retry-After: <seconds>`, `{"error": "rate_limited", "window": "minute|day"}` |
 | More than `ENQUEUE_MAX_CONCURRENT` (32) requests in flight, or more than `MAX_QUEUE_DEPTH` (10 000) unfinished messages | 503 | `Retry-After`; the subscriber retries with the same key |
 
@@ -248,10 +249,14 @@ queued ──► sending ──► sent ──► delivered        (email, learn
   the lease to expire and the message is retried. The provider call carries the message id as its
   `Idempotency-Key`, so a crash between "provider accepted" and "recorded as sent" does not send
   twice. Resend remembers a key for 24 h from the first call, and the send deadline below guarantees
-  no call is made later than 24 h after enqueue, so every retry falls inside that memory.
+  no call is made later than 24 h minus `IDEMPOTENCY_SAFETY_MARGIN` after enqueue, so every retry falls
+  inside that memory.
 - **Send deadline (call).** Every message has one: `expires_at`, defaulting to and capped at 24 hours
-  after enqueue. It bounds three things at once: retries stay inside the provider's idempotency
-  memory (above); a message delayed by a quota pause is dropped rather than sent stale; and held SMS
+  after enqueue. **(Amended in the final review:)** the worker never hands a message to the provider at
+  or after `created_at + 24 h − IDEMPOTENCY_SAFETY_MARGIN` (5 minutes); such a message is `expired`
+  (error type `expired`) instead, even when its `expires_at` is later. The enqueue contract is
+  unchanged: `expires_at` may still be up to 24 hours ahead. It bounds three things at once: retries
+  stay inside the provider's idempotency memory (above); a message delayed by a quota pause is dropped rather than sent stale; and held SMS
   expire instead of flushing weeks-old texts on the day a provider is configured. With polling ending
   48 h after `sent`, every message is final within about 72 h, so the 30-day sweep never deletes an
   unfinished one.
@@ -260,6 +265,11 @@ queued ──► sending ──► sent ──► delivered        (email, learn
   `concurrent_idempotent_requests`. Everything else is permanent → `failed`.
 - **Throttling is not an attempt.** When the provider's own limit (6.5) or a provider 429 holds a
   message back, no attempt is consumed; the message waits.
+- **Provider authentication failure is not an attempt (amended in the final review).** A Resend 401, or
+  a 403 whose error name ends in `_api_key`, pauses the provider for `AUTH_PAUSE` = 10 minutes with pause
+  reason `auth` and returns the message to the queue unconsumed, so a rotated or mistyped key holds the
+  queue instead of failing it; messages still expire at their send deadline. `sender_not_verified`
+  stays permanent.
 - **Held SMS.** With no SMS provider configured, SMS messages stay `queued` with hold reason
   `no_provider` until one is configured or their send deadline passes (then `expired`).
 - Order: oldest `next_attempt_at` first. No priorities **(call)**.
@@ -378,9 +388,10 @@ Mobile-first: every page is designed at phone width first and widens to a table/
 ### 7.2 Login
 
 - One user, `admin`. The password is the `ADMIN_PASSWORD` env var, compared in constant time.
-- Success sets a signed session cookie (HMAC with `SESSION_SECRET`; `HttpOnly`, `Secure`,
-  `SameSite=Strict`), valid 12 hours **(call)**. Logout clears it. Changing the password or the
-  secret in SOPS and redeploying invalidates every session.
+- Success sets a signed session cookie (`HttpOnly`, `Secure`, `SameSite=Strict`), valid 12 hours
+  **(call)**. Logout clears it. **(Amended in the final review:)** the signing key is
+  `HMAC-SHA256(SESSION_SECRET, "commsgun-session-key\0" + ADMIN_PASSWORD)`, computed once at start, so
+  changing the password or the secret in SOPS and redeploying invalidates every session.
 - Failed logins are limited to 5 per minute per client address, in memory **(call)**.
 - A server hook guards every route except `/login` and `/healthz`.
 - The browser only ever talks to the SvelteKit server; server-side `load` functions call the admin
@@ -406,7 +417,7 @@ Phone-width sketch of the overview:
 │ [ Filters · 2 ]  [ Custom range ]│  ← filters open in a bottom sheet
 ├──────────────────────────────────┤
 │ Delivered   Sent      Queued     │
-│   41         3          0        │
+│   41        44          0        │
 │ Bounced     Failed    Retries    │
 │    1         0          4        │
 ├──────────────────────────────────┤
@@ -432,6 +443,11 @@ Phone-width sketch of the overview:
 - Messages are cards on a phone and a table from tablet width up; tapping one opens its detail.
 - Charts use shadcn-svelte's chart components; counts are also given as numbers, never by colour
   alone. Light and dark follow the system setting.
+- **(Amended in the final review.)** The chart stacks only the five final outcomes (delivered,
+  complained, bounced, failed, expired), each counted by when it happened. `sent` counts every message
+  the provider accepted in the range, whatever happened to it later, so it overlaps those outcomes and
+  is not stacked; the **Sent** tile stays, with the note "Sent = accepted by the provider; Delivered =
+  confirmed later".
 
 ### 7.4 Time
 
