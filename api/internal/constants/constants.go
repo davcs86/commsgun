@@ -38,7 +38,26 @@ const (
 	ProviderResponseMaxBytes = 64 << 10
 	RateLimitDefaultPause    = time.Second
 	RateLimitMaxPause        = time.Hour
+
+	AdminDefaultRange = time.Hour
+	AdminMaxRange     = 31 * 24 * time.Hour
+	AdminFilterMaxLen = 200
+	AdminFacetCap     = 200
 )
+
+// BucketStep maps a stats range up to MaxRange onto a series bucket; the last step has no bound.
+type BucketStep struct{ MaxRange, Bucket time.Duration }
+
+// BucketSteps is ordered by MaxRange; ranges beyond the last bound use BucketLast.
+var BucketSteps = []BucketStep{
+	{time.Hour, time.Minute},
+	{6 * time.Hour, 5 * time.Minute},
+	{24 * time.Hour, 15 * time.Minute},
+	{7 * 24 * time.Hour, time.Hour},
+	{14 * 24 * time.Hour, 6 * time.Hour},
+}
+
+const BucketLast = 24 * time.Hour
 
 // PollSchedule lists bounce-poll offsets from sent_at; callers must not mutate it.
 var PollSchedule = []time.Duration{
