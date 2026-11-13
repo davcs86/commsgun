@@ -6,6 +6,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import favicon from '#lib/assets/favicon.svg';
+	import ProbeDialog from '#lib/components/ProbeDialog.svelte';
 	import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
 	import type { LayoutProps } from './$types';
 
@@ -38,6 +39,7 @@
 		<a href="/messages{messagesQuery}" class={buttonVariants({ variant: 'ghost', size: 'sm' })}
 			>Messages</a
 		>
+		<ProbeDialog />
 		<Button
 			variant="ghost"
 			size="icon"
