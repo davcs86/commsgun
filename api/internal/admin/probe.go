@@ -18,7 +18,7 @@ const (
 	probeApp       = "ops"
 	probeSubject   = "commsgun probe"
 	probeText      = "Hello world"
-	probeKeyPrefix = "probe:"
+	probeNamespace = "probe"
 	probeMethods   = "GET, POST"
 	headerIdemKey  = "Idempotency-Key"
 	// unknownFieldPrefix is encoding/json's DisallowUnknownFields error text before the quoted name.
@@ -140,11 +140,6 @@ func (h *handler) probeSend(w http.ResponseWriter, r *http.Request) (status int,
 	if want := h.providerName(ch); (got == nil) != (want == nil) || (got != nil && *got != *want) {
 		return reject(http.StatusConflict, "provider_mismatch", "")
 	}
-	key := r.Header.Get(headerIdemKey)
-	if key == "" {
-		return reject(http.StatusUnprocessableEntity, "idempotency_key_required", headerIdemKey)
-	}
-
 	msg := probeMessage{Channel: req.Channel, To: []string{req.To}}
 	if ch == model.ChannelEmail {
 		msg.Subject, msg.Text = probeSubject, probeText
@@ -155,7 +150,8 @@ func (h *handler) probeSend(w http.ResponseWriter, r *http.Request) (status int,
 	if err != nil {
 		return reject(http.StatusInternalServerError, "internal", "")
 	}
-	out, fail := enqueue.Submit(r.Context(), h.cfg, h.st, h.clk.Now(), &app, probeKeyPrefix+key, body, enqueue.SourceIP(r))
+	out, fail := enqueue.SubmitNamespaced(r.Context(), h.cfg, h.st, h.clk.Now(), &app, probeNamespace,
+		r.Header.Get(headerIdemKey), body, enqueue.SourceIP(r))
 	if fail != nil {
 		enqueue.WriteFailure(w, fail)
 		return fail.Status, channel, ""

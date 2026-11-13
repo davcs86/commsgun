@@ -106,8 +106,9 @@ Content-Type: application/json
   `Hello world`. No `from`, so the `ops` default sender applies.
 - The API builds the equivalent enqueue request and runs it through the same code path as
   `POST /v1/messages` for app `ops`: validation, idempotency, app limits, queue-depth cap, hold.
-- The stored idempotency key is `probe:<key>`, so a probe can never collide with a key the real `ops`
-  client used **(call)**.
+- The key is validated by the enqueue rules, then stored as `probe/<key>`. `/` is not a legal key
+  character on the enqueue listener, so a probe can never collide with a key the real `ops` client
+  used **(call)**.
 - `source_ip` is the first address of `X-Forwarded-For` (the dashboard forwards the browser's address),
   as on the enqueue listener **(call)**.
 - The log line carries status, channel and request id only.

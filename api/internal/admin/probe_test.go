@@ -12,6 +12,7 @@ import (
 
 	"github.com/davcs86/commsgun/api/internal/clock"
 	"github.com/davcs86/commsgun/api/internal/config"
+	"github.com/davcs86/commsgun/api/internal/enqueue"
 	"github.com/davcs86/commsgun/api/internal/model"
 	"github.com/davcs86/commsgun/api/internal/store"
 )
@@ -165,13 +166,37 @@ func TestProbeIdempotent(t *testing.T) {
 	}
 }
 
-func TestProbeKeyIsPrefixed(t *testing.T) {
+func TestProbeKeyIsNamespaced(t *testing.T) {
 	e := probeSetup(t, probeConfig(true))
 	accepted(t, e.send(http.MethodPost, "k1", probeEmail), 202)
-	for key, want := range map[string]bool{"probe:k1": true, "k1": false} {
+	for key, want := range map[string]bool{"probe/k1": true, "k1": false, "probe:k1": false} {
 		if _, _, found, err := e.st.LookupRequest(context.Background(), "ops", key); err != nil || found != want {
 			t.Errorf("lookup %q: found=%v err=%v", key, found, err)
 		}
+	}
+}
+
+func TestProbeKeyCannotCollideWithAnOpsKey(t *testing.T) {
+	cfg := probeConfig(true)
+	email := cfg.Apps["ops"].Channels[model.ChannelEmail]
+	email.PerMinute, email.PerDay = 10, 10
+	cfg.Apps["ops"].Channels[model.ChannelEmail] = email
+	e := probeSetup(t, cfg)
+	app := cfg.Apps["ops"]
+	other := []byte(`{"channel":"email","to":["x@example.com"],"subject":"s","text":"t"}`)
+	for _, key := range []string{"k1", "probe:k1", "probe.k1"} {
+		if _, fail := enqueue.Submit(context.Background(), cfg, e.st, now, &app, key, other, ""); fail != nil {
+			t.Fatalf("ops enqueue %q: %+v", key, fail)
+		}
+	}
+	accepted(t, e.send(http.MethodPost, "k1", probeEmail), 202)
+}
+
+func TestProbeKeyLengthFollowsEnqueue(t *testing.T) {
+	e := probeSetup(t, probeConfig(true))
+	accepted(t, e.send(http.MethodPost, strings.Repeat("k", 200), probeEmail), 202)
+	if rec := e.send(http.MethodPost, strings.Repeat("k", 201), probeEmail); rec.Code != 422 {
+		t.Errorf("201-character key = %d", rec.Code)
 	}
 }
 

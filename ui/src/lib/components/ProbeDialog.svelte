@@ -26,6 +26,7 @@
 	let key = $state('');
 	let sending = $state(false);
 	let result = $state<ProbeResult | null>(null);
+	let toInput = $state<HTMLInputElement | null>(null);
 
 	const loaded = $derived(typeof options === 'object' ? options : null);
 	const current = $derived(loaded?.channels.find((c) => c.channel === channel) ?? null);
@@ -41,8 +42,9 @@
 		key = crypto.randomUUID();
 	}
 
-	async function load() {
-		options = 'loading';
+	// A quiet reload keeps the form mounted, so focus and the status region survive it.
+	async function load(quiet = false) {
+		if (!quiet) options = 'loading';
 		try {
 			const res = await fetch('/probe', { headers: { accept: 'application/json' } });
 			if (res.redirected) return location.reload();
@@ -78,6 +80,7 @@
 		const input: ProbeInput = { channel, to: to.trim(), provider: current.provider, key };
 		if (!validDestination(channel, input.to)) {
 			result = { kind: 'invalid', field: 'to' };
+			toInput?.focus();
 			return;
 		}
 		sending = true;
@@ -98,9 +101,9 @@
 			key = crypto.randomUUID();
 			invalidateAll();
 		} else if (result?.kind === 'stale') {
-			const kept = result;
-			await load();
-			result = kept;
+			await load(true);
+		} else if (result?.kind === 'invalid' && result.field === 'to') {
+			toInput?.focus();
 		}
 	}
 </script>
@@ -125,7 +128,7 @@
 			<Alert.Root variant="destructive" role="alert">
 				<Alert.Title>The API is unavailable.</Alert.Title>
 				<Alert.Description>
-					<Button variant="outline" size="sm" onclick={load}>Retry</Button>
+					<Button variant="outline" size="sm" onclick={() => load()}>Retry</Button>
 				</Alert.Description>
 			</Alert.Root>
 		{:else if !options.available}
@@ -187,12 +190,13 @@
 						spellcheck={false}
 						placeholder={channel === 'sms' ? '+15551234567' : 'you@example.com'}
 						bind:value={to}
+						bind:ref={toInput}
 						oninput={reset}
 						aria-invalid={invalidTo}
 						aria-describedby={invalidTo ? `${id}-to-error` : undefined}
 					/>
 					{#if invalidTo}
-						<p id="{id}-to-error" class="text-destructive">
+						<p id="{id}-to-error" role="alert" class="text-destructive">
 							{channel === 'sms'
 								? 'Enter a number in international format, for example +15551234567.'
 								: 'Enter one valid email address.'}
@@ -203,7 +207,8 @@
 					{/if}
 				</div>
 
-				<div role="status" aria-live="polite" class="empty:hidden">
+				<!-- Always rendered: a live region that appears together with its text is not announced. -->
+				<div role="status" aria-live="polite" class="empty:-mt-4">
 					{#if result?.kind === 'queued'}
 						<p>
 							{result.held ? 'Probe accepted and held.' : 'Probe queued.'}

@@ -36,15 +36,27 @@ func unprocessable(code, field string) *Failure {
 	return &Failure{Status: http.StatusUnprocessableEntity, Code: code, Field: field}
 }
 
+// namespaceSep is outside keyPattern, so a namespaced key can never equal a caller-supplied one.
+const namespaceSep = "/"
+
 // Submit is the only path into the queue: idempotency, validation, channel check and limits.
 func Submit(ctx context.Context, cfg *config.Config, st Enqueuer, now time.Time,
 	app *config.App, key string, body []byte, sourceIP string) (Outcome, *Failure) {
+	return SubmitNamespaced(ctx, cfg, st, now, app, "", key, body, sourceIP)
+}
+
+// SubmitNamespaced validates key by the caller-facing rules, then stores it under namespace.
+func SubmitNamespaced(ctx context.Context, cfg *config.Config, st Enqueuer, now time.Time,
+	app *config.App, namespace, key string, body []byte, sourceIP string) (Outcome, *Failure) {
 	var out Outcome
 	switch {
 	case key == "":
 		return out, unprocessable(errKeyRequired, headerKey)
 	case len(key) > constants.IdempotencyKeyMaxLen || !keyPattern.MatchString(key):
 		return out, unprocessable(errInvalidKey, headerKey)
+	}
+	if namespace != "" {
+		key = namespace + namespaceSep + key
 	}
 
 	req, hash, verr := parse(body)

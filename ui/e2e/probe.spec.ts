@@ -181,6 +181,8 @@ test('a hostile or overlong destination is refused on the field and never sent',
 		await sendButton(page).click();
 		await expect(dialog(page).getByText('Enter one valid email address.')).toBeVisible();
 		await expect(destination(page)).toHaveAttribute('aria-invalid', 'true');
+		await expect(destination(page)).toBeFocused();
+		await expect(dialog(page).getByRole('alert')).toHaveText('Enter one valid email address.');
 		expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0);
 	}
 	await destination(page).fill('me@example.com');
