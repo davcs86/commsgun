@@ -1,3 +1,4 @@
+# golang:1.27.4-bookworm
 FROM golang@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS build
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 WORKDIR /src
@@ -8,6 +9,7 @@ COPY internal ./internal
 RUN go build -trimpath -ldflags="-s -w" -o /out/commsgun-api ./cmd/commsgun-api \
     && mkdir /out/data
 
+# gcr.io/distroless/static-debian12:nonroot
 FROM gcr.io/distroless/static-debian12@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 LABEL org.opencontainers.image.source="https://github.com/davcs86/commsgun" \
       org.opencontainers.image.licenses="MIT"
