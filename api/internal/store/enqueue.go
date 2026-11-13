@@ -103,36 +103,12 @@ func (s *Store) Enqueue(ctx context.Context, now time.Time, in EnqueueInput) (re
 	}
 
 	scope := fmt.Sprintf("app:%s:%s", in.App, in.Channel)
-	minuteStart := now.Truncate(time.Minute)
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	windows := []struct {
-		kind  string
-		start time.Time
-		limit int
-		reset time.Time
-	}{
-		{windowMinute, minuteStart, in.PerMinute, minuteStart.Add(time.Minute)},
-		{windowDay, dayStart, in.PerDay, dayStart.AddDate(0, 0, 1)},
+	blocked, err := reserveWindows(ctx, tx, scope, windowsAt(now, in.PerMinute, in.PerDay), n)
+	if err != nil {
+		return res, err
 	}
-	for _, w := range windows {
-		var used int
-		qerr := tx.QueryRowContext(ctx,
-			`SELECT count FROM rate_counters WHERE scope=? AND window_kind=? AND window_start=?`,
-			scope, w.kind, w.start.UnixMilli()).Scan(&used)
-		if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
-			return res, qerr
-		}
-		if used+n > w.limit {
-			return res, &RateLimitedError{Window: w.kind, RetryAfter: w.reset.Sub(now)}
-		}
-	}
-	for _, w := range windows {
-		if _, err = tx.ExecContext(ctx,
-			`INSERT INTO rate_counters(scope, window_kind, window_start, count) VALUES (?,?,?,?)
-			 ON CONFLICT(scope, window_kind, window_start) DO UPDATE SET count = count + excluded.count`,
-			scope, w.kind, w.start.UnixMilli(), n); err != nil {
-			return res, err
-		}
+	if blocked != nil {
+		return res, &RateLimitedError{Window: blocked.kind, RetryAfter: blocked.reset.Sub(now)}
 	}
 
 	reqID = uuid.NewString()
@@ -186,6 +162,48 @@ func messageIDs(ctx context.Context, tx *sql.Tx, reqID string) ([]string, error)
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+type window struct {
+	kind         string
+	start, reset time.Time
+	limit        int
+}
+
+// windowsAt returns the fixed UTC minute and UTC day windows containing now.
+func windowsAt(now time.Time, perMinute, perDay int) []window {
+	now = now.UTC()
+	minuteStart := now.Truncate(time.Minute)
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	return []window{
+		{windowMinute, minuteStart, minuteStart.Add(time.Minute), perMinute},
+		{windowDay, dayStart, dayStart.AddDate(0, 0, 1), perDay},
+	}
+}
+
+// reserveWindows adds n to every window's counter, or returns the first window n would overfill and writes nothing.
+func reserveWindows(ctx context.Context, tx *sql.Tx, scope string, windows []window, n int) (*window, error) {
+	for i, w := range windows {
+		var used int
+		err := tx.QueryRowContext(ctx,
+			`SELECT count FROM rate_counters WHERE scope=? AND window_kind=? AND window_start=?`,
+			scope, w.kind, w.start.UnixMilli()).Scan(&used)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if used+n > w.limit {
+			return &windows[i], nil
+		}
+	}
+	for _, w := range windows {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO rate_counters(scope, window_kind, window_start, count) VALUES (?,?,?,?)
+			 ON CONFLICT(scope, window_kind, window_start) DO UPDATE SET count = count + excluded.count`,
+			scope, w.kind, w.start.UnixMilli(), n); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
 }
 
 func nullIfEmpty(s string) any {

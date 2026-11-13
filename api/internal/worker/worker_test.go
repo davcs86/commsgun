@@ -56,7 +56,15 @@ func newEnv(t *testing.T, perMinute, perDay int) *env {
 }
 
 func (e *env) worker() *Worker {
-	return New(e.st, map[model.Channel]provider.Provider{model.ChannelEmail: e.fake}, e.cfg, e.clk, e.logger(), half)
+	return e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: e.fake})
+}
+
+func (e *env) workerWith(providers map[model.Channel]provider.Provider) *Worker {
+	w, err := New(e.st, providers, e.cfg, e.clk, e.logger(), half)
+	if err != nil {
+		panic(err)
+	}
+	return w
 }
 
 func (e *env) logger() *slog.Logger { return slog.New(slog.NewJSONHandler(e.logs, nil)) }
@@ -273,7 +281,7 @@ func TestThrottled429PausesWithoutAttempt(t *testing.T) {
 	e.fake.Script(provider.SendResult{Outcome: provider.Throttled, Status: 429, PauseUntilUTCMidnight: true, PauseReason: provider.PauseDailyQuota})
 	w := e.worker()
 	e.tick(t, w)
-	if n := e.count(t, `SELECT COUNT(*) FROM provider_pauses WHERE provider='fake' AND until=? AND reason='daily_quota'`, nextMidnight(t0).UnixMilli()); n != 1 {
+	if n := e.count(t, `SELECT COUNT(*) FROM provider_pauses WHERE provider='provider:email:fake' AND until=? AND reason='daily_quota'`, nextMidnight(t0).UnixMilli()); n != 1 {
 		t.Fatal("provider not paused until UTC midnight")
 	}
 	if n := e.count(t, `SELECT COUNT(*) FROM messages WHERE id=? AND state='queued' AND attempts=0 AND locked_until IS NULL`, id); n != 1 {
@@ -282,7 +290,7 @@ func TestThrottled429PausesWithoutAttempt(t *testing.T) {
 	if n := e.count(t, `SELECT COUNT(*) FROM attempts`); n != 0 {
 		t.Fatal("an attempt was recorded for a throttle")
 	}
-	if n := e.count(t, `SELECT COALESCE(SUM(count),0) FROM rate_counters WHERE scope='provider:fake'`); n != 0 {
+	if n := e.count(t, `SELECT COALESCE(SUM(count),0) FROM rate_counters WHERE scope='provider:email:fake'`); n != 0 {
 		t.Fatalf("reservation not released: %d", n)
 	}
 	e.clk.Advance(time.Hour)
@@ -302,7 +310,7 @@ func TestThrottledPauseFor(t *testing.T) {
 	e.enqueue(t, "k1", time.Hour)
 	e.fake.Script(provider.SendResult{Outcome: provider.Throttled, Status: 429, PauseFor: 7 * time.Second, PauseReason: provider.PauseRateLimit})
 	e.tick(t, e.worker())
-	if n := e.count(t, `SELECT COUNT(*) FROM provider_pauses WHERE provider='fake' AND until=? AND reason='rate_limit'`, t0.Add(7*time.Second).UnixMilli()); n != 1 {
+	if n := e.count(t, `SELECT COUNT(*) FROM provider_pauses WHERE provider='provider:email:fake' AND until=? AND reason='rate_limit'`, t0.Add(7*time.Second).UnixMilli()); n != 1 {
 		t.Fatal("provider not paused for PauseFor")
 	}
 }
@@ -310,7 +318,7 @@ func TestThrottledPauseFor(t *testing.T) {
 func TestExpiry(t *testing.T) {
 	e := newEnv(t, 10, 100)
 	id := e.enqueue(t, "k1", time.Hour)
-	if err := e.st.PauseProvider(context.Background(), "fake", nextMidnight(t0), provider.PauseDailyQuota); err != nil {
+	if err := e.st.PauseProvider(context.Background(), model.ChannelEmail, "fake", nextMidnight(t0), provider.PauseDailyQuota); err != nil {
 		t.Fatal(err)
 	}
 	w := e.worker()
@@ -346,12 +354,12 @@ func (r *recordingProvider) Send(ctx context.Context, m model.Message, b provide
 func TestNoSendAfterDeadline(t *testing.T) {
 	e := newEnv(t, 10, 100)
 	id := e.enqueue(t, "k1", time.Minute)
-	if _, err := e.st.ClaimDue(context.Background(), t0, 1, []string{"fake"}); err != nil {
+	if _, err := e.st.ClaimDue(context.Background(), t0, 1, model.ChannelEmail, "fake"); err != nil {
 		t.Fatal(err)
 	}
 	e.clk.Advance(constants.LeaseDuration)
 	rec := &recordingProvider{Provider: e.fake}
-	w := New(e.st, map[model.Channel]provider.Provider{model.ChannelEmail: rec}, e.cfg, e.clk, e.logger(), half)
+	w := e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: rec})
 	e.tick(t, w)
 	if len(rec.ids) != 0 {
 		t.Fatal("message past its deadline was handed to the provider")
@@ -362,7 +370,7 @@ func TestNoSendAfterDeadline(t *testing.T) {
 	if !e.bodiesGone(t, id) {
 		t.Fatal("bodies not deleted")
 	}
-	if n := e.count(t, `SELECT COALESCE(SUM(count),0) FROM rate_counters WHERE scope='provider:fake'`); n != 0 {
+	if n := e.count(t, `SELECT COALESCE(SUM(count),0) FROM rate_counters WHERE scope='provider:email:fake'`); n != 0 {
 		t.Fatalf("reservation kept for an unsent message: %d", n)
 	}
 }
@@ -405,7 +413,7 @@ func TestHeldSMSReleasedWhenProviderConfigured(t *testing.T) {
 	}
 	sms := provider.NewFake()
 	e.cfg.Providers[model.ChannelSMS] = &config.ProviderCfg{Name: "fake", PerMinute: 10, PerDay: 10}
-	w := New(e.st, map[model.Channel]provider.Provider{model.ChannelSMS: sms}, e.cfg, e.clk, e.logger(), half)
+	w := e.workerWith(map[model.Channel]provider.Provider{model.ChannelSMS: sms})
 	e.tick(t, w)
 	if st, _ := e.state(t, res.MessageIDs[0]); st != "sent" || len(sms.Sent()) != 1 {
 		t.Fatalf("released sms: state=%s sends=%d", st, len(sms.Sent()))
@@ -430,7 +438,10 @@ func TestCrashBetweenSendAndRecord(t *testing.T) {
 	id := e.enqueue(t, "k1", time.Hour)
 	rec := &recordingProvider{Provider: e.fake}
 	providers := map[model.Channel]provider.Provider{model.ChannelEmail: rec}
-	dying := newWorker(&failOnceStore{Store: e.st}, providers, e.cfg, e.clk, e.logger(), half)
+	dying, err := newWorker(&failOnceStore{Store: e.st}, providers, e.cfg, e.clk, e.logger(), half)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := dying.Tick(context.Background()); err == nil {
 		t.Fatal("Tick hid the RecordAttempt failure")
 	}
@@ -442,13 +453,13 @@ func TestCrashBetweenSendAndRecord(t *testing.T) {
 	}
 
 	e.clk.Advance(constants.LeaseDuration - time.Millisecond)
-	e.tick(t, New(e.st, providers, e.cfg, e.clk, e.logger(), half))
+	e.tick(t, e.workerWith(providers))
 	if len(rec.ids) != 1 {
 		t.Fatalf("resent while the lease was live: %d calls", len(rec.ids))
 	}
 
 	e.clk.Advance(time.Millisecond)
-	e.tick(t, New(e.st, providers, e.cfg, e.clk, e.logger(), half))
+	e.tick(t, e.workerWith(providers))
 	if len(rec.ids) != 2 || rec.ids[0] != id || rec.ids[1] != id {
 		t.Fatalf("send calls = %v, want the same id twice", rec.ids)
 	}
@@ -464,9 +475,11 @@ func TestShutdownUnclaimsWithoutAttempt(t *testing.T) {
 	e := newEnv(t, 10, 100)
 	id := e.enqueue(t, "k1", time.Hour)
 	ctx, cancel := context.WithCancel(context.Background())
-	p := &cancellingProvider{cancel: cancel}
-	w := New(e.st, map[model.Channel]provider.Provider{model.ChannelEmail: p}, e.cfg, e.clk, e.logger(), half)
-	_ = w.Tick(ctx)
+	p := &cancellingProvider{cancel: cancel, res: provider.SendResult{Outcome: provider.Retryable, ErrorType: model.ErrTimeout}}
+	w := e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: p})
+	if err := w.Tick(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Tick error = %v, want context.Canceled", err)
+	}
 	if p.calls != 1 {
 		t.Fatalf("send calls = %d, want 1", p.calls)
 	}
@@ -476,10 +489,14 @@ func TestShutdownUnclaimsWithoutAttempt(t *testing.T) {
 	if n := e.count(t, `SELECT COUNT(*) FROM attempts`); n != 0 {
 		t.Fatal("attempt recorded on shutdown")
 	}
+	if n := e.count(t, `SELECT COALESCE(SUM(count),0) FROM rate_counters WHERE scope='provider:email:fake'`); n != 0 {
+		t.Fatalf("reservation leaked on shutdown: %d", n)
+	}
 }
 
 type cancellingProvider struct {
 	cancel func()
+	res    provider.SendResult
 	calls  int
 }
 
@@ -489,7 +506,82 @@ func (c *cancellingProvider) Send(ctx context.Context, _ model.Message, _ provid
 	c.calls++
 	c.cancel()
 	<-ctx.Done()
-	return provider.SendResult{Outcome: provider.Retryable, ErrorType: model.ErrTimeout}
+	return c.res
+}
+
+func TestShutdownStillRecordsAccepted(t *testing.T) {
+	e := newEnv(t, 10, 100)
+	id := e.enqueue(t, "k1", time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &cancellingProvider{cancel: cancel, res: provider.SendResult{Outcome: provider.Accepted, ProviderID: "p-1"}}
+	w := e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: p})
+	if err := w.Tick(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Tick error = %v, want context.Canceled", err)
+	}
+	if p.calls != 1 {
+		t.Fatalf("send calls = %d, want 1", p.calls)
+	}
+	if n := e.count(t, `SELECT COUNT(*) FROM messages WHERE id=? AND state='sent' AND attempts=1 AND provider_message_id='p-1' AND subject IS NULL`, id); n != 1 {
+		t.Fatal("accepted send not recorded on shutdown")
+	}
+	if n := e.count(t, `SELECT COUNT(*) FROM attempts WHERE message_id=? AND outcome='accepted'`, id); n != 1 {
+		t.Fatal("accepted attempt row missing")
+	}
+}
+
+func TestThrottleCleanupSurvivesShutdown(t *testing.T) {
+	e := newEnv(t, 10, 100)
+	id := e.enqueue(t, "k1", time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &cancellingProvider{cancel: cancel, res: provider.SendResult{Outcome: provider.Throttled, PauseFor: time.Minute, PauseReason: provider.PauseRateLimit}}
+	w := e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: p})
+	if err := w.Tick(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Tick error = %v, want context.Canceled", err)
+	}
+	if n := e.count(t, `SELECT COUNT(*) FROM messages WHERE id=? AND state='queued' AND attempts=0 AND locked_until IS NULL`, id); n != 1 {
+		t.Fatal("message not unclaimed")
+	}
+	if n := e.count(t, `SELECT COALESCE(SUM(count),0) FROM rate_counters WHERE scope='provider:email:fake'`); n != 0 {
+		t.Fatalf("reservation leaked on shutdown: %d", n)
+	}
+}
+
+func TestNewRejectsMismatchedProviders(t *testing.T) {
+	e := newEnv(t, 10, 100)
+	if _, err := New(e.st, map[model.Channel]provider.Provider{model.ChannelSMS: e.fake}, e.cfg, e.clk, e.logger(), half); err == nil {
+		t.Error("channel without a config entry accepted")
+	}
+	e.cfg.Providers[model.ChannelEmail].Name = "resend"
+	if _, err := New(e.st, map[model.Channel]provider.Provider{model.ChannelEmail: e.fake}, e.cfg, e.clk, e.logger(), half); err == nil {
+		t.Error("provider name differing from config accepted")
+	}
+}
+
+func TestSameProviderNameOnTwoChannels(t *testing.T) {
+	e := newEnv(t, 10, 100)
+	e.cfg.Providers[model.ChannelSMS] = &config.ProviderCfg{Name: "fake", PerMinute: 10, PerDay: 100}
+	mail := e.enqueue(t, "k1", time.Hour)
+	res, err := e.st.Enqueue(context.Background(), t0, store.EnqueueInput{
+		App: "a", Channel: model.ChannelSMS, IdempotencyKey: "k2", BodyHash: sha256.Sum256([]byte("k2")),
+		Recipients: []string{"+15550001"}, SMSBody: "code 123", ExpiresAt: t0.Add(time.Hour),
+		PerMinute: 10, PerDay: 10, Provider: "fake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sms := provider.NewFake()
+	e.tick(t, e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: e.fake, model.ChannelSMS: sms}))
+	if got := e.fake.Sent(); len(got) != 1 || got[0].ID != mail {
+		t.Fatalf("email provider sent %+v", got)
+	}
+	if got := sms.Sent(); len(got) != 1 || got[0].ID != res.MessageIDs[0] {
+		t.Fatalf("sms provider sent %+v", got)
+	}
+	for _, scope := range []string{"provider:email:fake", "provider:sms:fake"} {
+		if n := e.count(t, `SELECT count FROM rate_counters WHERE scope=? AND window_kind='day'`, scope); n != 1 {
+			t.Fatalf("%s day counter = %d, want 1", scope, n)
+		}
+	}
 }
 
 func TestQueuedMessageSurvivesConfigRemoval(t *testing.T) {

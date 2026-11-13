@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/davcs86/commsgun/api/internal/constants"
@@ -26,9 +25,9 @@ type ClaimedMessage struct {
 	Body provider.Body
 }
 
-// ClaimDue leases up to limit due messages of the given providers, oldest next_attempt_at first.
-func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int, providers []string) (out []ClaimedMessage, err error) {
-	if len(providers) == 0 || limit <= 0 {
+// ClaimDue leases up to limit due messages of one channel and provider, oldest next_attempt_at first.
+func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int, channel model.Channel, provider string) (out []ClaimedMessage, err error) {
+	if limit <= 0 {
 		return nil, nil
 	}
 	nowMS := now.UTC().UnixMilli()
@@ -43,17 +42,13 @@ func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int, provider
 		}
 	}()
 
-	args := []any{model.StateQueued, nowMS, nowMS, model.StateSending, nowMS}
-	for _, p := range providers {
-		args = append(args, p)
-	}
-	args = append(args, limit)
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id FROM messages
 		 WHERE ((state=? AND hold_reason IS NULL AND next_attempt_at<=? AND (locked_until IS NULL OR locked_until<=?))
 		        OR (state=? AND locked_until<=?))
-		   AND provider IN (?`+strings.Repeat(",?", len(providers)-1)+`)
-		 ORDER BY next_attempt_at, rowid LIMIT ?`, args...)
+		   AND channel=? AND provider=?
+		 ORDER BY next_attempt_at, rowid LIMIT ?`,
+		model.StateQueued, nowMS, nowMS, model.StateSending, nowMS, channel, provider, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -87,8 +82,9 @@ func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int, provider
 	return out, nil
 }
 
-// ProviderReserve takes one slot in the provider's minute and day windows unless paused or full.
-func (s *Store) ProviderReserve(ctx context.Context, now time.Time, provider string, perMinute, perDay int) (ok bool, until time.Time, reason string, err error) {
+// ProviderReserve takes one slot in the channel provider's minute and day windows unless paused or full.
+func (s *Store) ProviderReserve(ctx context.Context, now time.Time, channel model.Channel, provider string, perMinute, perDay int) (ok bool, until time.Time, reason string, err error) {
+	scope := providerScope(channel, provider)
 	now = now.UTC()
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
@@ -103,41 +99,25 @@ func (s *Store) ProviderReserve(ctx context.Context, now time.Time, provider str
 
 	var pauseUntil int64
 	var pauseReason string
-	switch err = tx.QueryRowContext(ctx, `SELECT until, reason FROM provider_pauses WHERE provider=?`, provider).
+	switch err = tx.QueryRowContext(ctx, `SELECT until, reason FROM provider_pauses WHERE provider=?`, scope).
 		Scan(&pauseUntil, &pauseReason); {
 	case err == nil:
 		if pauseUntil > now.UnixMilli() {
 			return false, time.UnixMilli(pauseUntil).UTC(), "pause:" + pauseReason, tx.Commit()
 		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM provider_pauses WHERE provider=?`, provider); err != nil {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM provider_pauses WHERE provider=?`, scope); err != nil {
 			return false, until, "", err
 		}
 	case !errors.Is(err, sql.ErrNoRows):
 		return false, until, "", err
 	}
 
-	scope := providerScope(provider)
-	windows := providerWindows(now, perMinute, perDay)
-	for _, w := range windows {
-		var used int
-		qerr := tx.QueryRowContext(ctx,
-			`SELECT count FROM rate_counters WHERE scope=? AND window_kind=? AND window_start=?`,
-			scope, w.kind, w.start.UnixMilli()).Scan(&used)
-		if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
-			err = qerr
-			return false, until, "", err
-		}
-		if used >= w.limit {
-			return false, w.reset, w.kind, tx.Commit()
-		}
+	blocked, err := reserveWindows(ctx, tx, scope, windowsAt(now, perMinute, perDay), 1)
+	if err != nil {
+		return false, until, "", err
 	}
-	for _, w := range windows {
-		if _, err = tx.ExecContext(ctx,
-			`INSERT INTO rate_counters(scope, window_kind, window_start, count) VALUES (?,?,?,1)
-			 ON CONFLICT(scope, window_kind, window_start) DO UPDATE SET count = count + 1`,
-			scope, w.kind, w.start.UnixMilli()); err != nil {
-			return false, until, "", err
-		}
+	if blocked != nil {
+		return false, blocked.reset, blocked.kind, tx.Commit()
 	}
 	if err = tx.Commit(); err != nil {
 		return false, until, "", err
@@ -146,27 +126,27 @@ func (s *Store) ProviderReserve(ctx context.Context, now time.Time, provider str
 }
 
 // ProviderRelease undoes one reservation; now must be the time passed to ProviderReserve.
-func (s *Store) ProviderRelease(ctx context.Context, now time.Time, provider string) error {
+func (s *Store) ProviderRelease(ctx context.Context, now time.Time, channel model.Channel, provider string) error {
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
 		return translate(err)
 	}
 	defer tx.Rollback()
-	for _, w := range providerWindows(now.UTC(), 0, 0) {
+	for _, w := range windowsAt(now, 0, 0) {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE rate_counters SET count = count - 1 WHERE scope=? AND window_kind=? AND window_start=? AND count > 0`,
-			providerScope(provider), w.kind, w.start.UnixMilli()); err != nil {
+			providerScope(channel, provider), w.kind, w.start.UnixMilli()); err != nil {
 			return translate(err)
 		}
 	}
 	return translate(tx.Commit())
 }
 
-func (s *Store) PauseProvider(ctx context.Context, provider string, until time.Time, reason string) error {
+func (s *Store) PauseProvider(ctx context.Context, channel model.Channel, provider string, until time.Time, reason string) error {
 	_, err := s.w.ExecContext(ctx,
 		`INSERT INTO provider_pauses(provider, until, reason) VALUES (?,?,?)
 		 ON CONFLICT(provider) DO UPDATE SET until=excluded.until, reason=excluded.reason`,
-		provider, until.UTC().UnixMilli(), reason)
+		providerScope(channel, provider), until.UTC().UnixMilli(), reason)
 	return translate(err)
 }
 
@@ -193,6 +173,9 @@ func (s *Store) RecordAttempt(ctx context.Context, now time.Time, id string, r p
 		return ErrNotSending
 	}
 	n := attempts + 1
+	if r.Outcome != provider.Accepted && r.ErrorType == "" {
+		r.ErrorType = model.ErrUnknown
+	}
 
 	var outcome model.Outcome
 	switch r.Outcome {
@@ -242,20 +225,20 @@ func failTx(ctx context.Context, tx *sql.Tx, id string, n int, et model.ErrorTyp
 }
 
 // Unclaim returns a sending message to the queue without consuming an attempt.
-func (s *Store) Unclaim(ctx context.Context, id string) error {
+func (s *Store) Unclaim(ctx context.Context, now time.Time, id string) error {
 	res, err := s.w.ExecContext(ctx,
-		`UPDATE messages SET state=?, locked_until=NULL WHERE id=? AND state=?`,
-		model.StateQueued, id, model.StateSending)
+		`UPDATE messages SET state=?, locked_until=NULL, updated_at=? WHERE id=? AND state=?`,
+		model.StateQueued, now.UTC().UnixMilli(), id, model.StateSending)
 	return affectedOne(res, err)
 }
 
-// ExpireDue moves queued messages past their deadline to expired.
+// ExpireDue expires messages past their deadline that are queued or held by a dead lease.
 func (s *Store) ExpireDue(ctx context.Context, now time.Time) (int, error) {
 	nowMS := now.UTC().UnixMilli()
 	res, err := s.w.ExecContext(ctx,
 		`UPDATE messages SET state=?, error_type=?, final_at=?, locked_until=NULL, updated_at=?, `+clearBodies+`
-		 WHERE state=? AND expires_at<=?`,
-		model.StateExpired, model.ErrExpired, nowMS, nowMS, model.StateQueued, nowMS)
+		 WHERE expires_at<=? AND (state=? OR (state=? AND locked_until<=?))`,
+		model.StateExpired, model.ErrExpired, nowMS, nowMS, nowMS, model.StateQueued, model.StateSending, nowMS)
 	if err != nil {
 		return 0, translate(err)
 	}
@@ -299,21 +282,8 @@ func affectedOne(res sql.Result, err error) error {
 	return nil
 }
 
-type window struct {
-	kind         string
-	start, reset time.Time
-	limit        int
-}
-
-func providerScope(name string) string { return "provider:" + name }
-
-func providerWindows(now time.Time, perMinute, perDay int) []window {
-	minuteStart := now.Truncate(time.Minute)
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	return []window{
-		{windowMinute, minuteStart, minuteStart.Add(time.Minute), perMinute},
-		{windowDay, dayStart, dayStart.AddDate(0, 0, 1), perDay},
-	}
+func providerScope(channel model.Channel, name string) string {
+	return fmt.Sprintf("provider:%s:%s", channel, name)
 }
 
 func scanClaimed(row *sql.Row) (ClaimedMessage, error) {

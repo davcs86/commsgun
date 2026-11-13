@@ -23,7 +23,7 @@ func enqueueOne(t *testing.T, s *Store, key string, at time.Time) string {
 
 func claimOne(t *testing.T, s *Store, now time.Time) ClaimedMessage {
 	t.Helper()
-	got, err := s.ClaimDue(context.Background(), now, 1, []string{"resend"})
+	got, err := s.ClaimDue(context.Background(), now, 1, model.ChannelEmail, "resend")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestClaimDueOrderFiltersAndBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.ClaimDue(ctx, t0, 10, []string{"resend"})
+	got, err := s.ClaimDue(ctx, t0, 10, model.ChannelEmail, "resend")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestClaimDueSkipsHeld(t *testing.T) {
 	if _, err := s.Enqueue(context.Background(), t0, in); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ClaimDue(context.Background(), t0, 10, []string{"resend", "fake"})
+	got, err := s.ClaimDue(context.Background(), t0, 10, model.ChannelSMS, "")
 	if err != nil || len(got) != 0 {
 		t.Fatalf("claimed %d err %v, want none", len(got), err)
 	}
@@ -81,7 +81,7 @@ func TestLeaseBlocksSecondClaim(t *testing.T) {
 	ctx := context.Background()
 	id := enqueueOne(t, s, "k1", t0)
 	claimOne(t, s, t0)
-	got, err := s.ClaimDue(ctx, t0.Add(constants.LeaseDuration-time.Millisecond), 10, []string{"resend"})
+	got, err := s.ClaimDue(ctx, t0.Add(constants.LeaseDuration-time.Millisecond), 10, model.ChannelEmail, "resend")
 	if err != nil || len(got) != 0 {
 		t.Fatalf("second claim got %d err %v, want none", len(got), err)
 	}
@@ -95,31 +95,31 @@ func TestProviderReserveWindows(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	for i := 0; i < 2; i++ {
-		ok, _, _, err := s.ProviderReserve(ctx, t0, "resend", 2, 3)
+		ok, _, _, err := s.ProviderReserve(ctx, t0, model.ChannelEmail, "resend", 2, 3)
 		if err != nil || !ok {
 			t.Fatalf("reserve %d: ok=%v err=%v", i, ok, err)
 		}
 	}
-	ok, until, reason, err := s.ProviderReserve(ctx, t0, "resend", 2, 3)
+	ok, until, reason, err := s.ProviderReserve(ctx, t0, model.ChannelEmail, "resend", 2, 3)
 	if err != nil || ok || reason != "minute" || !until.Equal(t0.Truncate(time.Minute).Add(time.Minute)) {
 		t.Fatalf("minute full: ok=%v until=%v reason=%q err=%v", ok, until, reason, err)
 	}
 	next := t0.Truncate(time.Minute).Add(time.Minute)
-	if ok, _, _, err := s.ProviderReserve(ctx, next, "resend", 2, 3); err != nil || !ok {
+	if ok, _, _, err := s.ProviderReserve(ctx, next, model.ChannelEmail, "resend", 2, 3); err != nil || !ok {
 		t.Fatalf("next minute: ok=%v err=%v", ok, err)
 	}
 	midnight := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
-	ok, until, reason, err = s.ProviderReserve(ctx, next, "resend", 2, 3)
+	ok, until, reason, err = s.ProviderReserve(ctx, next, model.ChannelEmail, "resend", 2, 3)
 	if err != nil || ok || reason != "day" || !until.Equal(midnight) {
 		t.Fatalf("day full: ok=%v until=%v reason=%q err=%v", ok, until, reason, err)
 	}
-	if n := count(t, s, `SELECT count FROM rate_counters WHERE scope='provider:resend' AND window_kind='day'`); n != 3 {
+	if n := count(t, s, `SELECT count FROM rate_counters WHERE scope='provider:email:resend' AND window_kind='day'`); n != 3 {
 		t.Fatalf("day counter = %d, want 3", n)
 	}
-	if err := s.ProviderRelease(ctx, next, "resend"); err != nil {
+	if err := s.ProviderRelease(ctx, next, model.ChannelEmail, "resend"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _, _, err := s.ProviderReserve(ctx, next, "resend", 2, 3); err != nil || !ok {
+	if ok, _, _, err := s.ProviderReserve(ctx, next, model.ChannelEmail, "resend", 2, 3); err != nil || !ok {
 		t.Fatalf("after release: ok=%v err=%v", ok, err)
 	}
 }
@@ -128,17 +128,17 @@ func TestProviderReservePause(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	until := t0.Add(time.Hour)
-	if err := s.PauseProvider(ctx, "resend", until, "daily_quota"); err != nil {
+	if err := s.PauseProvider(ctx, model.ChannelEmail, "resend", until, "daily_quota"); err != nil {
 		t.Fatal(err)
 	}
-	ok, got, reason, err := s.ProviderReserve(ctx, t0, "resend", 10, 10)
+	ok, got, reason, err := s.ProviderReserve(ctx, t0, model.ChannelEmail, "resend", 10, 10)
 	if err != nil || ok || reason != "pause:daily_quota" || !got.Equal(until) {
 		t.Fatalf("paused: ok=%v until=%v reason=%q err=%v", ok, got, reason, err)
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM rate_counters`); n != 0 {
 		t.Fatalf("counters written while paused: %d", n)
 	}
-	if ok, _, _, err := s.ProviderReserve(ctx, until, "resend", 10, 10); err != nil || !ok {
+	if ok, _, _, err := s.ProviderReserve(ctx, until, model.ChannelEmail, "resend", 10, 10); err != nil || !ok {
 		t.Fatalf("pause over: ok=%v err=%v", ok, err)
 	}
 }
@@ -237,10 +237,10 @@ func TestUnclaim(t *testing.T) {
 	s := newStore(t)
 	id := enqueueOne(t, s, "k1", t0)
 	claimOne(t, s, t0)
-	if err := s.Unclaim(context.Background(), id); err != nil {
+	if err := s.Unclaim(context.Background(), t0.Add(time.Second), id); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=? AND state='queued' AND attempts=0 AND locked_until IS NULL`, id); n != 1 {
+	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=? AND state='queued' AND attempts=0 AND locked_until IS NULL AND updated_at=?`, id, t0.Add(time.Second).UnixMilli()); n != 1 {
 		t.Fatalf("unclaimed row not as expected")
 	}
 	claimOne(t, s, t0)
@@ -295,5 +295,86 @@ func TestReleaseHeld(t *testing.T) {
 	}
 	if c := count(t, s, `SELECT COUNT(*) FROM messages WHERE channel='email' AND provider='resend'`); c != 1 {
 		t.Fatalf("email row touched")
+	}
+}
+
+func TestRecordAttemptEmptyErrorTypeIsUnknown(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	retry, perm := enqueueOne(t, s, "k1", t0), enqueueOne(t, s, "k2", t0)
+	if _, err := s.ClaimDue(ctx, t0, 2, model.ChannelEmail, "resend"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAttempt(ctx, t0, retry, provider.SendResult{Outcome: provider.Retryable}, t0, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAttempt(ctx, t0, perm, provider.SendResult{Outcome: provider.Permanent}, t0, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM attempts WHERE error_type='unknown'`); n != 2 {
+		t.Fatalf("attempts with unknown = %d, want 2", n)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=? AND state='failed' AND error_type='unknown'`, perm); n != 1 {
+		t.Fatal("permanent failure without unknown error_type")
+	}
+}
+
+func TestExpireDueDeadLeaseOfRemovedProvider(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := enqueueOne(t, s, "k1", t0)
+	claimOne(t, s, t0)
+	if got, err := s.ClaimDue(ctx, t0.Add(2*time.Hour), 10, model.ChannelEmail, "other"); err != nil || len(got) != 0 {
+		t.Fatalf("claimed %d via another provider, err %v", len(got), err)
+	}
+	live := t0.Add(constants.LeaseDuration - time.Millisecond)
+	if _, err := s.w.Exec(`UPDATE messages SET expires_at=? WHERE id=?`, t0.UnixMilli(), id); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.ExpireDue(ctx, live); err != nil || n != 0 {
+		t.Fatalf("expired %d with a live lease, err %v", n, err)
+	}
+	now := t0.Add(2 * time.Hour)
+	if n, err := s.ExpireDue(ctx, now); err != nil || n != 1 {
+		t.Fatalf("expired %d, err %v, want 1", n, err)
+	}
+	if c := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=? AND state='expired' AND error_type='expired' AND final_at=?
+		AND locked_until IS NULL AND subject IS NULL AND body_text IS NULL AND body_bytes>0`, id, now.UnixMilli()); c != 1 {
+		t.Fatal("dead-lease row not expired")
+	}
+}
+
+func TestChannelsDoNotMix(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	mail := input("app1", "k1", "k1", "r@x.com")
+	mail.Provider = "fake"
+	sms := input("app1", "k2", "k2", "+15550001")
+	sms.Channel, sms.Provider = model.ChannelSMS, "fake"
+	for _, in := range []EnqueueInput{mail, sms} {
+		if _, err := s.Enqueue(ctx, t0, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ch := range []model.Channel{model.ChannelEmail, model.ChannelSMS} {
+		got, err := s.ClaimDue(ctx, t0, 10, ch, "fake")
+		if err != nil || len(got) != 1 || got[0].Channel != ch {
+			t.Fatalf("%s pass claimed %+v err %v", ch, got, err)
+		}
+	}
+	if ok, _, _, err := s.ProviderReserve(ctx, t0, model.ChannelEmail, "fake", 1, 1); err != nil || !ok {
+		t.Fatalf("email reserve ok=%v err=%v", ok, err)
+	}
+	if ok, _, _, err := s.ProviderReserve(ctx, t0, model.ChannelSMS, "fake", 1, 1); err != nil || !ok {
+		t.Fatalf("sms reserve blocked by email counters: ok=%v err=%v", ok, err)
+	}
+	if err := s.PauseProvider(ctx, model.ChannelEmail, "fake", t0.Add(time.Hour), "rate_limit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, reason, err := s.ProviderReserve(ctx, t0.Add(2*time.Minute), model.ChannelSMS, "fake", 1, 10); err != nil || reason != "" {
+		t.Fatalf("sms paused by email pause: reason=%q err=%v", reason, err)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM rate_counters WHERE scope IN ('provider:email:fake','provider:sms:fake') AND window_kind='day'`); n != 2 {
+		t.Fatalf("separate day counters = %d, want 2", n)
 	}
 }

@@ -4,6 +4,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -18,12 +19,12 @@ import (
 )
 
 type dispatchStore interface {
-	ClaimDue(ctx context.Context, now time.Time, limit int, providers []string) ([]store.ClaimedMessage, error)
-	ProviderReserve(ctx context.Context, now time.Time, provider string, perMinute, perDay int) (bool, time.Time, string, error)
-	ProviderRelease(ctx context.Context, now time.Time, provider string) error
-	PauseProvider(ctx context.Context, provider string, until time.Time, reason string) error
+	ClaimDue(ctx context.Context, now time.Time, limit int, channel model.Channel, provider string) ([]store.ClaimedMessage, error)
+	ProviderReserve(ctx context.Context, now time.Time, channel model.Channel, provider string, perMinute, perDay int) (bool, time.Time, string, error)
+	ProviderRelease(ctx context.Context, now time.Time, channel model.Channel, provider string) error
+	PauseProvider(ctx context.Context, channel model.Channel, provider string, until time.Time, reason string) error
 	RecordAttempt(ctx context.Context, now time.Time, id string, r provider.SendResult, started time.Time, backoff time.Duration) error
-	Unclaim(ctx context.Context, id string) error
+	Unclaim(ctx context.Context, now time.Time, id string) error
 	ExpireDue(ctx context.Context, now time.Time) (int, error)
 	ExpireClaimed(ctx context.Context, now time.Time, id string) error
 	ReleaseHeld(ctx context.Context, channel model.Channel, provider string) (int, error)
@@ -41,12 +42,24 @@ type Worker struct {
 	lastTick time.Time
 }
 
-func New(st *store.Store, providers map[model.Channel]provider.Provider, cfg *config.Config, clk clock.Clock, log *slog.Logger, rnd func() float64) *Worker {
+// New fails if a provider has no config entry for its channel or its name differs from that entry.
+func New(st *store.Store, providers map[model.Channel]provider.Provider, cfg *config.Config, clk clock.Clock, log *slog.Logger, rnd func() float64) (*Worker, error) {
 	return newWorker(st, providers, cfg, clk, log, rnd)
 }
 
-func newWorker(st dispatchStore, providers map[model.Channel]provider.Provider, cfg *config.Config, clk clock.Clock, log *slog.Logger, rnd func() float64) *Worker {
-	return &Worker{st: st, providers: providers, cfg: cfg, clk: clk, log: log, rnd: rnd}
+func newWorker(st dispatchStore, providers map[model.Channel]provider.Provider, cfg *config.Config, clk clock.Clock, log *slog.Logger, rnd func() float64) (*Worker, error) {
+	for ch, p := range providers {
+		pc := cfg.Providers[ch]
+		switch {
+		case p == nil:
+			return nil, fmt.Errorf("worker: nil provider for channel %s", ch)
+		case pc == nil:
+			return nil, fmt.Errorf("worker: provider for channel %s has no config entry", ch)
+		case pc.Name != p.Name():
+			return nil, fmt.Errorf("worker: channel %s provider %q does not match configured %q", ch, p.Name(), pc.Name)
+		}
+	}
+	return &Worker{st: st, providers: providers, cfg: cfg, clk: clk, log: log, rnd: rnd}, nil
 }
 
 // Backoff is the delay before attempt+1: min(base·2^(attempt-1), max) with ±BackoffJitter.
@@ -105,13 +118,11 @@ func (w *Worker) Tick(ctx context.Context) error {
 	return nil
 }
 
-// channels lists, in a stable order, the channels with both a provider and its limits.
+// channels lists the configured channels in a stable order.
 func (w *Worker) channels() []model.Channel {
 	var out []model.Channel
-	for ch, p := range w.providers {
-		if p != nil && w.cfg.Providers[ch] != nil {
-			out = append(out, ch)
-		}
+	for ch := range w.providers {
+		out = append(out, ch)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
@@ -125,26 +136,27 @@ func (w *Worker) dispatch(ctx context.Context, ch model.Channel) error {
 			return ctx.Err()
 		}
 		now := w.clk.Now()
-		ok, _, _, err := w.st.ProviderReserve(ctx, now, name, limits.PerMinute, limits.PerDay)
+		ok, _, _, err := w.st.ProviderReserve(ctx, now, ch, name, limits.PerMinute, limits.PerDay)
 		if err != nil || !ok {
 			return err
 		}
-		claimed, err := w.st.ClaimDue(ctx, now, 1, []string{name})
+		release := func() error { return w.st.ProviderRelease(context.WithoutCancel(ctx), now, ch, name) }
+		claimed, err := w.st.ClaimDue(ctx, now, 1, ch, name)
 		if err != nil || len(claimed) == 0 {
-			return errors.Join(err, w.st.ProviderRelease(ctx, now, name))
+			return errors.Join(err, release())
 		}
 		m := claimed[0]
 		if !m.ExpiresAt.After(now) {
-			if err := w.st.ExpireClaimed(ctx, now, m.ID); err != nil {
-				return errors.Join(err, w.st.ProviderRelease(ctx, now, name))
+			if err := w.st.ExpireClaimed(context.WithoutCancel(ctx), now, m.ID); err != nil {
+				return errors.Join(err, release())
 			}
 			w.log.Info("message expired before send", "message_id", m.ID)
-			if err := w.st.ProviderRelease(ctx, now, name); err != nil {
+			if err := release(); err != nil {
 				return err
 			}
 			continue
 		}
-		stop, err := w.send(ctx, now, p, m)
+		stop, err := w.send(ctx, now, ch, p, m)
 		if err != nil || stop {
 			return err
 		}
@@ -153,39 +165,41 @@ func (w *Worker) dispatch(ctx context.Context, ch model.Channel) error {
 }
 
 // send delivers one claimed message; stop reports that this provider is done for the tick.
-func (w *Worker) send(ctx context.Context, reservedAt time.Time, p provider.Provider, m store.ClaimedMessage) (stop bool, err error) {
+func (w *Worker) send(ctx context.Context, reservedAt time.Time, ch model.Channel, p provider.Provider, m store.ClaimedMessage) (stop bool, err error) {
 	sctx, cancel := context.WithTimeout(ctx, constants.SendTimeout)
 	started := w.clk.Now()
 	res := p.Send(sctx, m.Message, m.Body)
 	cancel()
 
-	if ctx.Err() != nil {
+	// Cleanup and an accepted send's record must survive shutdown, hence the uncancellable context.
+	bg := context.WithoutCancel(ctx)
+	now := w.clk.Now()
+	if ctx.Err() != nil && res.Outcome != provider.Accepted {
 		w.log.Info("send interrupted by shutdown", "message_id", m.ID)
-		return true, errors.Join(ctx.Err(), w.st.Unclaim(context.WithoutCancel(ctx), m.ID))
+		return true, errors.Join(ctx.Err(), w.st.ProviderRelease(bg, reservedAt, ch, p.Name()), w.st.Unclaim(bg, now, m.ID))
 	}
 
-	now := w.clk.Now()
 	if res.Outcome == provider.Throttled {
 		until := now.Add(res.PauseFor)
 		if res.PauseUntilUTCMidnight {
 			until = time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
 		}
 		err := errors.Join(
-			w.st.ProviderRelease(ctx, reservedAt, p.Name()),
-			w.st.PauseProvider(ctx, p.Name(), until, res.PauseReason),
-			w.st.Unclaim(ctx, m.ID),
+			w.st.ProviderRelease(bg, reservedAt, ch, p.Name()),
+			w.st.PauseProvider(bg, ch, p.Name(), until, res.PauseReason),
+			w.st.Unclaim(bg, now, m.ID),
 		)
 		w.log.Warn("provider throttled", "message_id", m.ID, "provider", p.Name(), "reason", res.PauseReason, "until", until)
 		return true, err
 	}
 
-	if err := w.st.RecordAttempt(ctx, now, m.ID, res, started, Backoff(m.Attempts+1, w.rnd)); err != nil {
+	if err := w.st.RecordAttempt(bg, now, m.ID, res, started, Backoff(m.Attempts+1, w.rnd)); err != nil {
 		w.log.Error("recording attempt failed; lease will expire and the message be resent idempotently",
 			"message_id", m.ID, "error", err)
 		return true, err
 	}
 	w.log.Info("send attempt", "message_id", m.ID, "outcome", outcomeName(res.Outcome), "error_type", string(res.ErrorType))
-	return false, nil
+	return ctx.Err() != nil, ctx.Err()
 }
 
 func outcomeName(o provider.Outcome) model.Outcome {
