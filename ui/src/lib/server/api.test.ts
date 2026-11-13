@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from './env.js';
 import { createApi } from './api.js';
 import { parseFilters } from '../filters.js';
@@ -9,7 +9,8 @@ const env: Env = {
 	sessionSecret: 's'.repeat(32),
 	adminApiToken: TOKEN,
 	apiBaseUrl: 'http://api:9201',
-	origin: 'https://x.test'
+	origin: 'https://x.test',
+	sessionKey: Buffer.alloc(32)
 };
 const filters = parseFilters(
 	new URLSearchParams('range=1h&channel=email'),
@@ -18,6 +19,7 @@ const filters = parseFilters(
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
+beforeEach(() => vi.spyOn(console, 'error').mockImplementation(() => {}));
 afterEach(() => vi.restoreAllMocks());
 
 describe('createApi', () => {
@@ -37,15 +39,21 @@ describe('createApi', () => {
 
 	it('applies a 5s abort signal to every call', async () => {
 		const spy = vi.spyOn(AbortSignal, 'timeout');
-		const fetchFn = vi.fn<(u: string, i?: RequestInit) => Promise<Response>>(async () => json({}));
-		const api = createApi(env, fetchFn as unknown as typeof fetch);
-		await api.stats(filters);
-		await api.facets();
-		await api.overview();
-		await api.message('m1');
-		expect(spy).toHaveBeenCalledTimes(4);
-		expect(spy).toHaveBeenCalledWith(5000);
-		for (const [, init] of fetchFn.mock.calls) expect(init?.signal).toBeInstanceOf(AbortSignal);
+		try {
+			const fetchFn = vi.fn<(u: string, i?: RequestInit) => Promise<Response>>(async () =>
+				json({})
+			);
+			const api = createApi(env, fetchFn as unknown as typeof fetch);
+			await api.stats(filters);
+			await api.facets();
+			await api.overview();
+			await api.message('m1');
+			expect(spy).toHaveBeenCalledTimes(4);
+			expect(spy).toHaveBeenCalledWith(5000);
+			for (const [, init] of fetchFn.mock.calls) expect(init?.signal).toBeInstanceOf(AbortSignal);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 
 	it('maps a network error and a timeout to unavailable', async () => {
@@ -65,6 +73,8 @@ describe('createApi', () => {
 				json({ error: 'nope', field: 'from' }, status)) as unknown as typeof fetch);
 		expect(await mk(503).overview()).toEqual({ ok: false, status: 503, reason: 'unavailable' });
 		expect(await mk(404).message('x')).toEqual({ ok: false, status: 404, reason: 'not_found' });
+		expect(await mk(404).stats(filters)).toEqual({ ok: false, status: 404, reason: 'error' });
+		expect(await mk(404).overview()).toEqual({ ok: false, status: 404, reason: 'error' });
 		expect(await mk(401).stats(filters)).toEqual({ ok: false, status: 401, reason: 'error' });
 		expect(await mk(400).stats(filters)).toEqual({ ok: false, status: 400, reason: 'error' });
 		expect(await mk(500).facets()).toEqual({ ok: false, status: 500, reason: 'error' });
@@ -100,8 +110,9 @@ describe('createApi', () => {
 
 	it('aborts after exactly 5s: still pending at 4999 ms, unavailable at 5000 ms', async () => {
 		vi.useFakeTimers();
+		const spy = vi.spyOn(AbortSignal, 'timeout');
 		try {
-			vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+			spy.mockImplementation((ms) => {
 				const c = new AbortController();
 				setTimeout(() => c.abort(new DOMException('timed out', 'TimeoutError')), ms);
 				return c.signal;
@@ -120,6 +131,7 @@ describe('createApi', () => {
 			await p;
 			expect(settled).toEqual({ ok: false, status: 0, reason: 'unavailable' });
 		} finally {
+			spy.mockRestore();
 			vi.useRealTimers();
 		}
 	});
@@ -147,5 +159,48 @@ describe('createApi', () => {
 				json({ error: TOKEN }, 500)) as unknown as typeof fetch).overview()
 		];
 		for (const r of failures) expect(JSON.stringify(r)).not.toContain(TOKEN);
+	});
+
+	describe('failure log', () => {
+		const logged = (spy: { mock: { calls: unknown[][] } }) =>
+			spy.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>);
+
+		it.each([
+			['a non-2xx status', async () => json({ error: 'x' }, 401), 401],
+			['a 503', async () => json({}, 503), 503],
+			['a 404 outside message()', async () => json({}, 404), 404],
+			['an unparsable body', async () => new Response('<html>', { status: 200 }), 200],
+			[
+				'a network error',
+				async () => {
+					throw new TypeError('fetch failed');
+				},
+				'network'
+			],
+			[
+				'a timeout',
+				async () => {
+					throw new DOMException('timed out', 'TimeoutError');
+				},
+				'timeout'
+			]
+		])('logs one fixed-shape line to stderr for %s', async (_name, impl, status) => {
+			const spy = vi.mocked(console.error);
+			await createApi(env, impl as unknown as typeof fetch).stats(filters);
+			expect(logged(spy)).toEqual([
+				{ level: 'error', msg: 'admin api call failed', endpoint: 'stats', status }
+			]);
+			const line = String(spy.mock.calls[0][0]);
+			for (const secret of [TOKEN, 'channel', 'email', '<html>', 'fetch failed']) {
+				expect(line).not.toContain(secret);
+			}
+		});
+
+		it('logs nothing for a success or a missing message', async () => {
+			const spy = vi.mocked(console.error);
+			await createApi(env, (async () => json({})) as unknown as typeof fetch).overview();
+			await createApi(env, (async () => json({}, 404)) as unknown as typeof fetch).message('m1');
+			expect(spy).not.toHaveBeenCalled();
+		});
 	});
 });

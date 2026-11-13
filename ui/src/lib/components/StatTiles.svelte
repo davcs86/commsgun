@@ -2,6 +2,7 @@
 	import type { Totals } from '#lib/types.js';
 
 	let { totals }: { totals: Totals } = $props();
+	const noteId = $props.id();
 
 	const tiles = $derived([
 		{ label: 'Delivered', value: totals.delivered },
@@ -17,7 +18,11 @@
 	]);
 </script>
 
-<dl data-testid="stat-tiles" class="grid grid-cols-3 gap-2 md:grid-cols-6">
+<dl
+	data-testid="stat-tiles"
+	aria-describedby={noteId}
+	class="grid grid-cols-3 gap-2 md:grid-cols-6"
+>
 	{#each tiles as tile (tile.label)}
 		<div
 			class="flex flex-col rounded-xl bg-card p-3 text-card-foreground ring-1 ring-foreground/10"
@@ -30,3 +35,6 @@
 		</div>
 	{/each}
 </dl>
+<p id={noteId} class="mt-1 text-xs text-muted-foreground">
+	Sent = accepted by the provider; Delivered = confirmed later
+</p>

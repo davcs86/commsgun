@@ -1,10 +1,21 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { SESSION_COOKIE } from '../src/lib/server/constants.js';
-import { signSession } from '../src/lib/server/session.js';
-import { receivedRequests, resetRequests, setScenario } from './stub-api.js';
+import { deriveSessionKey, signSession } from '../src/lib/server/session.js';
+import type { Stats } from '../src/lib/types.js';
+import {
+	ACCEPTED_OUTCOMES,
+	receivedRequests,
+	resetRequests,
+	SCENARIOS,
+	setScenario,
+	STUB_TOKEN,
+	STUB_URL,
+	TEST_ADMIN_PASSWORD,
+	TEST_SESSION_SECRET
+} from './stub-api.js';
 
-const SESSION_SECRET = 'fake-session-secret-000000000000000';
+const SESSION_KEY = deriveSessionKey(TEST_SESSION_SECRET, TEST_ADMIN_PASSWORD);
 const DAY_MS = 86_400_000;
 const COMPACT_TIME = (zone: string) =>
 	new RegExp(`^(\\d{4}-\\d{2}-\\d{2} )?\\d{2}:\\d{2} ${zone}$`);
@@ -12,7 +23,7 @@ const COMPACT_TIME = (zone: string) =>
 test.beforeEach(async ({ context, baseURL }) => {
 	await setScenario('normal');
 	await context.addCookies([
-		{ name: SESSION_COOKIE, value: signSession(SESSION_SECRET, Date.now()), url: baseURL }
+		{ name: SESSION_COOKIE, value: signSession(SESSION_KEY, Date.now()), url: baseURL }
 	]);
 });
 
@@ -42,7 +53,7 @@ test('default view: 1h is the current range and the tiles show the totals', asyn
 	await expect(chip(page, '7d')).not.toHaveAttribute('aria-current');
 	const expected: [string, string][] = [
 		['Delivered', '41'],
-		['Sent', '3'],
+		['Sent', '44'],
 		['Queued', '0'],
 		['Bounced', '1'],
 		['Failed', '0'],
@@ -51,6 +62,9 @@ test('default view: 1h is the current range and the tiles show the totals', asyn
 	for (const [label, value] of expected) {
 		await expect(tileValue(page, label)).toHaveText(value);
 	}
+	await expect(
+		page.getByText('Sent = accepted by the provider; Delivered = confirmed later')
+	).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Errors by type' })).toBeVisible();
 	const errors = page.getByRole('region', { name: 'Errors by type' });
 	await expect(errors.getByRole('listitem').filter({ hasText: 'timeout' })).toContainText('3');
@@ -78,7 +92,7 @@ test('range chips work without JavaScript', async ({ browser, baseURL }) => {
 		extraHTTPHeaders: { 'x-forwarded-proto': 'http' }
 	});
 	await context.addCookies([
-		{ name: SESSION_COOKIE, value: signSession(SESSION_SECRET, Date.now()), url: baseURL }
+		{ name: SESSION_COOKIE, value: signSession(SESSION_KEY, Date.now()), url: baseURL }
 	]);
 	const page = await context.newPage();
 	await page.goto('/?channel=email');
@@ -207,6 +221,38 @@ test('a paused provider shows the reason and when it resumes', async ({ page }) 
 	await expect(email).toContainText('Daily quota reached');
 	await expect(email.getByText(/^resumes/)).toBeVisible();
 	await expect(email).toContainText('100 / 100');
+});
+
+test('a provider paused for a rejected API key says so', async ({ page }) => {
+	await setScenario('auth');
+	await page.goto('/');
+	const email = page
+		.getByRole('region', { name: 'Provider usage' })
+		.getByRole('listitem')
+		.filter({ hasText: 'resend' });
+	await expect(email).toContainText('Provider rejected the API key');
+	await expect(email.getByText(/^resumes/)).toBeVisible();
+});
+
+test('stub stats never count more outcomes than sends, per bucket and in total', async () => {
+	for (const scenario of SCENARIOS.filter((s) => s !== 'down')) {
+		await setScenario(scenario);
+		for (const range of [3_600_000, 7 * DAY_MS, 30 * DAY_MS]) {
+			const to = Date.now();
+			const q = new URLSearchParams({
+				from: new Date(to - range).toISOString(),
+				to: new Date(to).toISOString()
+			});
+			const res = await fetch(`${STUB_URL}/admin/v1/stats?${q}`, {
+				headers: { authorization: `Bearer ${STUB_TOKEN}` }
+			});
+			const stats = (await res.json()) as Stats;
+			for (const point of [...stats.series, stats.totals]) {
+				const accepted = ACCEPTED_OUTCOMES.reduce((sum, k) => sum + point[k], 0);
+				expect(point.sent, `${scenario} ${range}`).toBeGreaterThanOrEqual(accepted);
+			}
+		}
+	}
 });
 
 test('hostile data is shown as text and does not widen the page', async ({ page }) => {
@@ -396,13 +442,17 @@ test('mixed outcomes: Failed includes expired; legend and pauses use exact value
 	const legend = page.getByRole('list', { name: 'Totals' }).getByRole('listitem');
 	await expect(legend).toHaveText([
 		'Delivered 30',
-		'Sent 2',
-		'Bounced 3',
 		'Complained 1',
+		'Bounced 3',
 		'Failed 2',
 		'Expired 3'
 	]);
-	await expect(page.getByRole('img', { name: /Delivered 30, Sent 2, .*Expired 3/ })).toBeVisible();
+	await expect(
+		page.getByRole('img', {
+			name: 'Outcomes per bucket: Delivered 30, Complained 1, Bounced 3, Failed 2, Expired 3'
+		})
+	).toBeVisible();
+	await expect(tileValue(page, 'Sent')).toHaveText('36');
 
 	const rows = page.getByRole('region', { name: 'Provider usage' }).getByRole('listitem');
 	const email = rows.filter({ hasText: 'resend' });

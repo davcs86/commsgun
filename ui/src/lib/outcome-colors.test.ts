@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { OUTCOMES as STACKED } from './components/OutcomeChart.svelte';
 
 const OUTCOMES = ['delivered', 'sent', 'bounced', 'complained', 'failed', 'expired'] as const;
 const css = readFileSync(new URL('../routes/layout.css', import.meta.url), 'utf8');
@@ -12,7 +13,6 @@ function token(block: string, name: string): [number, number, number] {
 	return [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
-// OKLCH → linear sRGB (Björn Ottosson's OKLab matrices), clipped to the gamut.
 function luminance([L, C, h]: [number, number, number]): number {
 	const a = C * Math.cos((h * Math.PI) / 180);
 	const b = C * Math.sin((h * Math.PI) / 180);
@@ -41,9 +41,10 @@ describe.each(Object.entries(SCHEMES))('outcome colours, %s scheme', (_, block) 
 		}
 	);
 
-	it('neighbouring outcomes differ in lightness, not only in hue', () => {
-		for (let i = 1; i < OUTCOMES.length; i++) {
-			expect(contrast(lum[i], lum[i - 1])).toBeGreaterThanOrEqual(1.2);
+	it('neighbouring stacked outcomes differ in lightness, not only in hue', () => {
+		const stacked = STACKED.map((o) => luminance(token(block, `outcome-${o}`)));
+		for (let i = 1; i < stacked.length; i++) {
+			expect(contrast(stacked[i], stacked[i - 1])).toBeGreaterThanOrEqual(1.2);
 		}
 	});
 });

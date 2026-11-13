@@ -11,11 +11,11 @@ export const init: ServerInit = () => {
 };
 
 export const handle: Handle = async ({ event, resolve }) => {
-	const { sessionSecret, origin } = getEnv();
+	const { sessionKey, origin } = getEnv();
 	if (event.url.pathname !== '/healthz' && event.url.origin !== origin) {
 		return text('Bad origin', { status: 400 });
 	}
-	event.locals.authed = verifySession(sessionSecret, event.cookies.get(SESSION_COOKIE), Date.now());
+	event.locals.authed = verifySession(sessionKey, event.cookies.get(SESSION_COOKIE), Date.now());
 	if (!event.locals.authed && !PUBLIC_PATHS.has(event.url.pathname)) {
 		const next = encodeURIComponent(event.url.pathname + event.url.search);
 		redirect(303, `/login?next=${next}`);

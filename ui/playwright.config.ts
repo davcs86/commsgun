@@ -1,11 +1,11 @@
 import { defineConfig } from '@playwright/test';
-import { STUB_TOKEN, STUB_URL } from './e2e/stub-api.js';
+import { STUB_TOKEN, STUB_URL, TEST_ADMIN_PASSWORD, TEST_SESSION_SECRET } from './e2e/stub-api.js';
 
 const PORT = 4173;
 
 const testEnv = {
-	ADMIN_PASSWORD: 'fake-admin-password-0000',
-	SESSION_SECRET: 'fake-session-secret-000000000000000',
+	ADMIN_PASSWORD: TEST_ADMIN_PASSWORD,
+	SESSION_SECRET: TEST_SESSION_SECRET,
 	ADMIN_API_TOKEN: STUB_TOKEN,
 	API_BASE_URL: STUB_URL,
 	ORIGIN: `http://127.0.0.1:${PORT}`,

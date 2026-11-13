@@ -1,4 +1,4 @@
-import { MAX_CUSTOM_RANGE_MS, RANGE_SECONDS, TEXT_FILTER_MAX } from './constants.js';
+import { MAX_CUSTOM_RANGE_MS, RANGE_SECONDS, TEXT_FILTER_MAX_BYTES } from './constants.js';
 import { CHANNELS, STATES, type Channel, type State } from './types.js';
 
 export const RANGES = ['1h', '3h', '6h', '12h', '24h', '3d', '7d', '14d', '30d'] as const;
@@ -30,8 +30,23 @@ const TEXT_FIELDS = [
 	['recipient', 'recipient']
 ] as const;
 
+const utf8Length = (codePoint: number) =>
+	codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
+
+// The API rejects filters over 200 UTF-8 bytes, so cut on a code point boundary at that size.
+function truncateUtf8(value: string, maxBytes: number): string {
+	let bytes = 0;
+	let end = 0;
+	for (const ch of value) {
+		bytes += utf8Length(ch.codePointAt(0) ?? 0);
+		if (bytes > maxBytes) break;
+		end += ch.length;
+	}
+	return value.slice(0, end);
+}
+
 function text(value: string | null): string | undefined {
-	const t = (value ?? '').trim().slice(0, TEXT_FILTER_MAX);
+	const t = truncateUtf8((value ?? '').trim(), TEXT_FILTER_MAX_BYTES);
 	return t === '' ? undefined : t;
 }
 

@@ -18,13 +18,13 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const username = String(form.get('username') ?? '');
 		const password = String(form.get('password') ?? '');
-		const { adminPassword, sessionSecret } = getEnv();
+		const { adminPassword, sessionKey } = getEnv();
 		const userOk = checkPassword(username, ADMIN_USERNAME);
 		const passwordOk = checkPassword(password, adminPassword);
 		if (!(userOk && passwordOk)) {
 			return fail(400, { message: 'Incorrect username or password' });
 		}
-		cookies.set(SESSION_COOKIE, signSession(sessionSecret, Date.now()), {
+		cookies.set(SESSION_COOKIE, signSession(sessionKey, Date.now()), {
 			path: '/',
 			httpOnly: true,
 			secure: true,

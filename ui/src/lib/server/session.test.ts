@@ -6,28 +6,50 @@ import {
 	LOGIN_WINDOW_MS,
 	SESSION_TTL_MS
 } from './constants';
-import { LoginLimiter, checkPassword, safeNext, signSession, verifySession } from './session';
+import {
+	LoginLimiter,
+	checkPassword,
+	deriveSessionKey,
+	safeNext,
+	signSession,
+	verifySession
+} from './session';
 
 const SECRET = 'test-secret-0000000000000000000000000';
+const PASSWORD = 'password-A-000000';
+const KEY = deriveSessionKey(SECRET, PASSWORD);
 const NOW = 1_800_000_000_000;
-const validCookie = signSession(SECRET, NOW);
+const validCookie = signSession(KEY, NOW);
 const b64url = (s: string) => Buffer.from(s).toString('base64url');
 
 describe('session cookie', () => {
 	it('accepts a fresh cookie and rejects it after 12h', () => {
-		expect(verifySession(SECRET, validCookie, NOW)).toBe(true);
-		expect(verifySession(SECRET, validCookie, NOW + SESSION_TTL_MS - 1)).toBe(true);
-		expect(verifySession(SECRET, validCookie, NOW + SESSION_TTL_MS)).toBe(false);
+		expect(verifySession(KEY, validCookie, NOW)).toBe(true);
+		expect(verifySession(KEY, validCookie, NOW + SESSION_TTL_MS - 1)).toBe(true);
+		expect(verifySession(KEY, validCookie, NOW + SESSION_TTL_MS)).toBe(false);
 	});
 
 	it('rejects a cookie signed with another secret', () => {
-		expect(verifySession('other-secret-00000000000000000000000', validCookie, NOW)).toBe(false);
+		const other = deriveSessionKey('other-secret-00000000000000000000000', PASSWORD);
+		expect(verifySession(other, validCookie, NOW)).toBe(false);
+	});
+
+	it('rejects a cookie signed before the admin password changed', () => {
+		expect(verifySession(deriveSessionKey(SECRET, 'password-B-000000'), validCookie, NOW)).toBe(
+			false
+		);
+	});
+
+	it('derives a stable key that is neither the secret nor the password', () => {
+		expect(deriveSessionKey(SECRET, PASSWORD).equals(KEY)).toBe(true);
+		expect(KEY.toString('utf8')).not.toContain(SECRET);
+		expect(KEY.toString('utf8')).not.toContain(PASSWORD);
 	});
 
 	it('rejects a validly signed payload that lacks a numeric exp', () => {
 		const payload = b64url(JSON.stringify({ exp: 'x' }));
-		const sig = createHmac('sha256', SECRET).update(payload).digest('base64url');
-		expect(verifySession(SECRET, `${payload}.${sig}`, NOW)).toBe(false);
+		const sig = createHmac('sha256', KEY).update(payload).digest('base64url');
+		expect(verifySession(KEY, `${payload}.${sig}`, NOW)).toBe(false);
 	});
 
 	const forgedSig = createHmac('sha256', 'wrong').update('eyJleHAiOiJ4In0').digest('base64url');
@@ -42,8 +64,8 @@ describe('session cookie', () => {
 		['non-base64 chars', '!!!.???'],
 		['non-canonical signature', validCookie + '=']
 	])('verifySession(%s) is false and does not throw', (_name, value) => {
-		expect(() => verifySession(SECRET, value, NOW)).not.toThrow();
-		expect(verifySession(SECRET, value, NOW)).toBe(false);
+		expect(() => verifySession(KEY, value, NOW)).not.toThrow();
+		expect(verifySession(KEY, value, NOW)).toBe(false);
 	});
 });
 

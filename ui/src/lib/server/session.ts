@@ -3,24 +3,30 @@ import {
 	LOGIN_LIMITER_MAX_KEYS,
 	LOGIN_MAX_ATTEMPTS,
 	LOGIN_WINDOW_MS,
+	SESSION_KEY_LABEL,
 	SESSION_TTL_MS
 } from './constants';
 
-const sign = (secret: string, payload: string): Buffer =>
-	createHmac('sha256', secret).update(payload).digest();
+const sign = (key: Buffer, payload: string): Buffer =>
+	createHmac('sha256', key).update(payload).digest();
 
-export function signSession(secret: string, now: number): string {
-	const payload = Buffer.from(JSON.stringify({ exp: now + SESSION_TTL_MS })).toString('base64url');
-	return `${payload}.${sign(secret, payload).toString('base64url')}`;
+// Depends on the password too, so changing either ADMIN_PASSWORD or SESSION_SECRET ends every session.
+export function deriveSessionKey(secret: string, password: string): Buffer {
+	return createHmac('sha256', secret).update(`${SESSION_KEY_LABEL}\0${password}`).digest();
 }
 
-export function verifySession(secret: string, cookie: string | undefined, now: number): boolean {
+export function signSession(key: Buffer, now: number): string {
+	const payload = Buffer.from(JSON.stringify({ exp: now + SESSION_TTL_MS })).toString('base64url');
+	return `${payload}.${sign(key, payload).toString('base64url')}`;
+}
+
+export function verifySession(key: Buffer, cookie: string | undefined, now: number): boolean {
 	try {
 		const parts = (cookie ?? '').split('.');
 		if (parts.length !== 2) return false;
 		const [payload, signature] = parts;
 		const given = Buffer.from(signature, 'base64url');
-		const expected = sign(secret, payload);
+		const expected = sign(key, payload);
 		if (given.toString('base64url') !== signature) return false;
 		if (given.length !== expected.length || !timingSafeEqual(given, expected)) return false;
 		const { exp } = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));

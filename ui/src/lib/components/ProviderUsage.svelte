@@ -9,7 +9,8 @@
 	const PAUSE_REASONS: Record<string, string> = {
 		daily_quota: 'Daily quota reached',
 		monthly_quota: 'Monthly quota reached',
-		rate_limit: 'Rate limited'
+		rate_limit: 'Rate limited',
+		auth: 'Provider rejected the API key'
 	};
 
 	const channelLabel = (c: string) => CHANNEL_LABELS[c as keyof typeof CHANNEL_LABELS] ?? c;

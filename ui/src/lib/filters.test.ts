@@ -71,7 +71,7 @@ describe('parseFilters', () => {
 
 	it('treats years outside 1970..9999 as invalid', () => {
 		for (const qs of [
-			'from=2026-11-12T00:00:00Z&to=275760-09-13T00:00:00Z',
+			`from=2026-11-12T00:00:00Z&to=${encodeURIComponent('+275760-09-13T00:00:00Z')}`,
 			'from=1969-12-31T00:00:00Z&to=2026-11-12T00:00:00Z'
 		]) {
 			const f = parse(qs);
@@ -117,13 +117,24 @@ describe('parseFilters', () => {
 		expect(ok.state).toBe('bounced');
 	});
 
-	it('trims and truncates text filters to 100 chars; empty means unset', () => {
+	it('trims and truncates text filters to 200 UTF-8 bytes; empty means unset', () => {
 		const f = parse(
-			`app=${encodeURIComponent('  ' + 'a'.repeat(150) + '  ')}&sender=%20%20&recipient=${'r'.repeat(100)}x`
+			`app=${encodeURIComponent('  ' + 'a'.repeat(250) + '  ')}&sender=%20%20&recipient=${'r'.repeat(200)}x`
 		);
-		expect(f.app).toBe('a'.repeat(100));
+		expect(f.app).toBe('a'.repeat(200));
 		expect(f.sender).toBeUndefined();
-		expect(f.recipient).toBe('r'.repeat(100));
+		expect(f.recipient).toBe('r'.repeat(200));
+	});
+
+	it('truncates CJK and emoji text on a code point boundary within 200 bytes', () => {
+		const bytes = (s: string) => new TextEncoder().encode(s).length;
+		const cjk = parse(`recipient=${encodeURIComponent('漢'.repeat(100))}`).recipient ?? '';
+		expect(cjk).toBe('漢'.repeat(66));
+		expect(bytes(cjk)).toBe(198);
+		const emoji = parse(`sender=${encodeURIComponent('a' + '😀'.repeat(60))}`).sender ?? '';
+		expect(emoji).toBe('a' + '😀'.repeat(49));
+		expect(bytes(emoji)).toBe(197);
+		expect(emoji.endsWith('\ud83d')).toBe(false);
 	});
 });
 

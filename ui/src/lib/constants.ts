@@ -1,5 +1,5 @@
 export const API_TIMEOUT_MS = 5000;
-export const TEXT_FILTER_MAX = 100;
+export const TEXT_FILTER_MAX_BYTES = 200;
 export const MAX_CUSTOM_RANGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 export const RANGE_SECONDS = {

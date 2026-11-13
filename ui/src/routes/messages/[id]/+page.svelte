@@ -12,6 +12,7 @@
 
 	const retryHref = $derived(page.url.pathname + page.url.search);
 	const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+	const HELD_CHANNEL: Record<string, string> = { email: 'email', sms: 'SMS' };
 
 	function timeline(m: Message) {
 		const steps: { label: string; iso: string }[] = [{ label: 'Enqueued', iso: m.created_at }];
@@ -74,7 +75,9 @@
 
 		{#if m.hold_reason === 'no_provider'}
 			<div data-testid="held" class="rounded-xl bg-muted p-3 ring-1 ring-foreground/10">
-				<p class="font-medium">Held: no SMS provider configured</p>
+				<p class="font-medium">
+					Held: no {HELD_CHANNEL[m.channel] ?? m.channel} provider configured
+				</p>
 				<p class="text-sm">Expires <LocalTime iso={m.expires_at} /></p>
 			</div>
 		{/if}

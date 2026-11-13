@@ -1,16 +1,17 @@
 <script lang="ts" module>
-	import type { Stats } from '#lib/types.js';
+	import type { Stats, Totals } from '#lib/types.js';
 
-	export const OUTCOMES = [
-		'delivered',
-		'sent',
-		'bounced',
-		'complained',
-		'failed',
-		'expired'
-	] as const;
+	// Final outcomes only (`sent` overlaps them); the order keeps neighbours apart in lightness.
+	export const OUTCOMES = ['delivered', 'complained', 'bounced', 'failed', 'expired'] as const;
 	type Outcome = (typeof OUTCOMES)[number];
 	export type Bucket = { t: number } & Record<Outcome, number>;
+
+	export function emptyText(totals: Totals): string | null {
+		if (OUTCOMES.some((k) => totals[k] > 0)) return null;
+		return totals.enqueued === 0 && totals.sent === 0
+			? 'No messages in this range'
+			: 'No outcomes yet in this range';
+	}
 
 	const MAX_BUCKETS = 1000;
 
@@ -44,9 +45,8 @@
 
 	const config = {
 		delivered: { label: 'Delivered', color: 'var(--outcome-delivered)' },
-		sent: { label: 'Sent', color: 'var(--outcome-sent)' },
-		bounced: { label: 'Bounced', color: 'var(--outcome-bounced)' },
 		complained: { label: 'Complained', color: 'var(--outcome-complained)' },
+		bounced: { label: 'Bounced', color: 'var(--outcome-bounced)' },
 		failed: { label: 'Failed', color: 'var(--outcome-failed)' },
 		expired: { label: 'Expired', color: 'var(--outcome-expired)' }
 	} satisfies Chart.ChartConfig;
@@ -58,7 +58,7 @@
 	}));
 
 	const data = $derived(buckets(stats));
-	const empty = $derived(OUTCOMES.every((k) => stats.totals[k] === 0));
+	const empty = $derived(emptyText(stats.totals));
 	const summary = $derived(
 		`Outcomes per bucket: ${series.map((s) => `${s.label} ${stats.totals[s.key]}`).join(', ')}`
 	);
@@ -71,7 +71,7 @@
 	</Card.Header>
 	<Card.Content data-testid="outcome-chart">
 		{#if empty || data.length === 0}
-			<p class="py-8 text-center text-muted-foreground">No messages in this range</p>
+			<p class="py-8 text-center text-muted-foreground">{empty ?? 'No messages in this range'}</p>
 		{:else}
 			<Chart.Container {config} class="aspect-auto h-56 w-full" role="img" aria-label={summary}>
 				<BarChart

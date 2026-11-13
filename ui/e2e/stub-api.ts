@@ -4,8 +4,10 @@ import { resolve } from 'node:path';
 export const STUB_PORT = 4181;
 export const STUB_URL = `http://127.0.0.1:${STUB_PORT}`;
 export const STUB_TOKEN = 'fake-admin-api-token-00000000000000';
+export const TEST_ADMIN_PASSWORD = 'fake-admin-password-0000';
+export const TEST_SESSION_SECRET = 'fake-session-secret-000000000000000';
 
-export const SCENARIOS = ['normal', 'empty', 'down', 'hostile', 'mixed'] as const;
+export const SCENARIOS = ['normal', 'empty', 'down', 'hostile', 'mixed', 'auth'] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 export const ENDPOINTS = ['stats', 'overview', 'facets', 'messages'] as const;
 export type Endpoint = (typeof ENDPOINTS)[number];
@@ -15,6 +17,8 @@ export const HOSTILE_ERROR = 'E'.repeat(300);
 export const MESSAGE_COUNT = 64;
 // A bounced SMS with two failed attempts, so its detail page shows the hostile error text.
 export const HOSTILE_INDEX = 4;
+// A queued email held because no email provider is configured.
+export const HELD_EMAIL_INDEX = 13;
 const PAGE_SIZE = 50;
 const MINUTE = 60_000;
 const DAY = 86_400_000;
@@ -40,9 +44,12 @@ const COUNT_KEYS = [
 	'retries'
 ] as const;
 
+// Outcomes a provider accepted first, so each is also counted in `sent`.
+export const ACCEPTED_OUTCOMES = ['delivered', 'bounced', 'complained'] as const;
+
 const NORMAL_TOTALS: Counts & { queued_now: number } = {
 	enqueued: 44,
-	sent: 3,
+	sent: 44,
 	delivered: 41,
 	bounced: 1,
 	complained: 0,
@@ -54,7 +61,7 @@ const NORMAL_TOTALS: Counts & { queued_now: number } = {
 
 const MIXED_TOTALS: Counts & { queued_now: number } = {
 	enqueued: 40,
-	sent: 2,
+	sent: 36,
 	delivered: 30,
 	bounced: 3,
 	complained: 1,
@@ -109,8 +116,16 @@ function stats(scenario: Scenario, query: URLSearchParams, now: number) {
 			: scenario === 'mixed'
 				? { ...MIXED_TOTALS }
 				: { ...NORMAL_TOTALS };
+	const place = (key: (typeof COUNT_KEYS)[number], k: number) => (series[(k * 7) % n][key] += 1);
 	for (const key of COUNT_KEYS) {
-		for (let k = 0; k < totals[key]; k++) series[(k * 7) % n][key] += 1;
+		if (!(ACCEPTED_OUTCOMES as readonly string[]).includes(key)) {
+			for (let k = 0; k < totals[key]; k++) place(key, k);
+		}
+	}
+	// Accepted outcomes reuse the sent buckets' slots, so every bucket keeps sent >= their sum.
+	let slot = 0;
+	for (const key of ACCEPTED_OUTCOMES) {
+		for (let k = 0; k < totals[key]; k++) place(key, slot++);
 	}
 	const empty = scenario === 'empty';
 	return {
@@ -173,6 +188,7 @@ function overview(scenario: Scenario, now: number) {
 	if (scenario === 'mixed') return mixedOverview(now);
 	const resets = nextUtcMidnight(now);
 	const paused = scenario === 'hostile';
+	const auth = scenario === 'auth';
 	return {
 		queue_depth: scenario === 'empty' ? 0 : 2,
 		oldest_waiting_at: scenario === 'empty' ? null : new Date(now - 10 * MINUTE).toISOString(),
@@ -186,8 +202,8 @@ function overview(scenario: Scenario, now: number) {
 					limit: 100,
 					resets_at: resets
 				},
-				paused_until: paused ? resets : null,
-				pause_reason: paused ? 'daily_quota' : null,
+				paused_until: paused ? resets : auth ? new Date(now + 10 * MINUTE).toISOString() : null,
+				pause_reason: paused ? 'daily_quota' : auth ? 'auth' : null,
 				held: 0
 			},
 			{
@@ -238,7 +254,8 @@ function messageFixtures(scenario: Scenario, now: number) {
 					: `user${i}@example.com`,
 			sender: channel === 'sms' ? '+15550000000' : 'alerts@example.com',
 			state,
-			hold_reason: channel === 'sms' && state === 'queued' ? 'no_provider' : null,
+			hold_reason:
+				state === 'queued' && (channel === 'sms' || i === HELD_EMAIL_INDEX) ? 'no_provider' : null,
 			attempts: attemptCount,
 			error_type: errorType,
 			provider: attemptCount > 0 ? 'resend' : null,

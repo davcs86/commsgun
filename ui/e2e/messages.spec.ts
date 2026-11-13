@@ -1,26 +1,30 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { SESSION_COOKIE } from '../src/lib/server/constants.js';
-import { signSession } from '../src/lib/server/session.js';
+import { deriveSessionKey, signSession } from '../src/lib/server/session.js';
 import {
+	HELD_EMAIL_INDEX,
 	HOSTILE_ERROR,
 	HOSTILE_RECIPIENT,
 	MESSAGE_COUNT,
 	receivedRequests,
 	resetRequests,
-	setScenario
+	setScenario,
+	TEST_ADMIN_PASSWORD,
+	TEST_SESSION_SECRET
 } from './stub-api.js';
 
-const SESSION_SECRET = 'fake-session-secret-000000000000000';
+const SESSION_KEY = deriveSessionKey(TEST_SESSION_SECRET, TEST_ADMIN_PASSWORD);
 const PAGE_SIZE = 50;
 const FAILED_ID = 'msg-0006';
 const HELD_ID = 'msg-0035';
+const HELD_EMAIL_ID = `msg-${String(HELD_EMAIL_INDEX + 1).padStart(4, '0')}`;
 const HOSTILE_ID = 'msg-0005';
 
 test.beforeEach(async ({ context, baseURL }) => {
 	await setScenario('normal');
 	await context.addCookies([
-		{ name: SESSION_COOKIE, value: signSession(SESSION_SECRET, Date.now()), url: baseURL }
+		{ name: SESSION_COOKIE, value: signSession(SESSION_KEY, Date.now()), url: baseURL }
 	]);
 });
 
@@ -208,6 +212,11 @@ test('a delivered message has Enqueued, Sent and Delivered in the timeline', asy
 	await expect(page.getByTestId('attempt')).toHaveCount(1);
 });
 
+test('a held email names the email channel', async ({ page }) => {
+	await page.goto(`/messages/${HELD_EMAIL_ID}`);
+	await expect(page.getByTestId('held')).toContainText('Held: no email provider configured');
+});
+
 test('a held SMS says why and when it expires', async ({ page }) => {
 	await page.goto(`/messages/${HELD_ID}`);
 	const held = page.getByTestId('held');
@@ -219,10 +228,10 @@ test('a held SMS says why and when it expires', async ({ page }) => {
 
 test('the detail page has no body or subject section', async ({ page }) => {
 	await page.goto(`/messages/${FAILED_ID}`);
+	await expect(page.getByTestId('metadata')).toBeVisible();
 	await expect(page.getByRole('heading', { name: /body|subject/i })).toHaveCount(0);
-	await expect(page.getByText(/subject/i)).toHaveCount(0);
-	await expect(page.getByText(/body/i)).toHaveCount(1);
-	await expect(page.getByText('Body size', { exact: true })).toBeVisible();
+	const labels = await page.getByTestId('metadata').locator('dt').allTextContents();
+	expect(labels.filter((l) => /body|subject/i.test(l))).toEqual(['Body size']);
 });
 
 for (const id of ['does-not-exist', 'bad%20id']) {

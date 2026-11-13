@@ -1,4 +1,5 @@
 import * as privateEnv from '$app/env/private';
+import { deriveSessionKey } from './session';
 
 export type Env = {
 	adminPassword: string;
@@ -6,6 +7,7 @@ export type Env = {
 	adminApiToken: string;
 	apiBaseUrl: string;
 	origin: string;
+	sessionKey: Buffer;
 };
 
 const MIN_ADMIN_PASSWORD = 16;
@@ -25,7 +27,7 @@ export function loadEnv(source: Record<string, string | undefined>): Env {
 		return value;
 	};
 
-	const env: Env = {
+	const env = {
 		adminPassword: read('ADMIN_PASSWORD', (v) => v.length >= MIN_ADMIN_PASSWORD),
 		sessionSecret: read('SESSION_SECRET', (v) => v.length >= MIN_SESSION_SECRET),
 		adminApiToken: read('ADMIN_API_TOKEN', (v) => v.length >= MIN_ADMIN_API_TOKEN),
@@ -34,8 +36,11 @@ export function loadEnv(source: Record<string, string | undefined>): Env {
 	};
 
 	if (bad.length > 0) throw new Error(`invalid environment: ${bad.join(', ')}`);
-	env.origin = new URL(env.origin).origin;
-	return env;
+	return {
+		...env,
+		origin: new URL(env.origin).origin,
+		sessionKey: deriveSessionKey(env.sessionSecret, env.adminPassword)
+	};
 }
 
 let cached: Env | undefined;
