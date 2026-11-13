@@ -1,6 +1,7 @@
 # commsgun — email/SMS delivery hub: design
 
-Status: **awaiting owner approval** (2026-11-13). Nothing is built until this is approved.
+Status: **approved by the owner** (2026-11-13), including the 24-hour send deadline (6.4). The limits in
+section 9 are still to be confirmed before the first deploy. Plans: `docs/superpowers/plans/`.
 
 Items marked **(call)** are the designer's choices, not owner decisions — correct any of them.
 Items marked **(owner)** were decided by the owner in the design conversation.
