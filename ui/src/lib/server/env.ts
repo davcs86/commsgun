@@ -12,8 +12,8 @@ const MIN_ADMIN_PASSWORD = 16;
 const MIN_SESSION_SECRET = 32;
 const MIN_ADMIN_API_TOKEN = 32;
 
-function isUrl(value: string): boolean {
-	return URL.canParse(value);
+function isHttpUrl(value: string): boolean {
+	return URL.canParse(value) && /^https?:$/.test(new URL(value).protocol);
 }
 
 // Error messages name the variable only, never its value.
@@ -29,8 +29,8 @@ export function loadEnv(source: Record<string, string | undefined>): Env {
 		adminPassword: read('ADMIN_PASSWORD', (v) => v.length >= MIN_ADMIN_PASSWORD),
 		sessionSecret: read('SESSION_SECRET', (v) => v.length >= MIN_SESSION_SECRET),
 		adminApiToken: read('ADMIN_API_TOKEN', (v) => v.length >= MIN_ADMIN_API_TOKEN),
-		apiBaseUrl: read('API_BASE_URL', isUrl),
-		origin: read('ORIGIN', isUrl)
+		apiBaseUrl: read('API_BASE_URL', isHttpUrl),
+		origin: read('ORIGIN', isHttpUrl)
 	};
 
 	if (bad.length > 0) throw new Error(`invalid environment: ${bad.join(', ')}`);

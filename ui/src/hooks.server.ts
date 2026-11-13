@@ -1,4 +1,4 @@
-import { redirect } from '@sveltejs/kit';
+import { redirect, text } from '@sveltejs/kit';
 import type { Handle, ServerInit } from '@sveltejs/kit/hooks';
 import { getEnv } from './lib/server/env';
 import { SESSION_COOKIE } from './lib/server/constants';
@@ -11,7 +11,10 @@ export const init: ServerInit = () => {
 };
 
 export const handle: Handle = async ({ event, resolve }) => {
-	const { sessionSecret } = getEnv();
+	const { sessionSecret, origin } = getEnv();
+	if (event.url.pathname !== '/healthz' && event.url.origin !== origin) {
+		return text('Bad origin', { status: 400 });
+	}
 	event.locals.authed = verifySession(sessionSecret, event.cookies.get(SESSION_COOKIE), Date.now());
 	if (!event.locals.authed && !PUBLIC_PATHS.has(event.url.pathname)) {
 		const next = encodeURIComponent(event.url.pathname + event.url.search);

@@ -9,6 +9,7 @@ const testEnv = {
 	API_BASE_URL: 'http://127.0.0.1:9',
 	ORIGIN: `http://127.0.0.1:${PORT}`,
 	PROTOCOL_HEADER: 'x-forwarded-proto',
+	HOST_HEADER: 'x-forwarded-host',
 	HOST: '127.0.0.1',
 	PORT: String(PORT)
 };
@@ -27,6 +28,7 @@ export default defineConfig({
 		command: 'pnpm build && node build',
 		url: `http://127.0.0.1:${PORT}/healthz`,
 		env: testEnv,
+		timeout: 180_000,
 		reuseExistingServer: false
 	}
 });

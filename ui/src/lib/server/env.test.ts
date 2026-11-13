@@ -15,7 +15,10 @@ describe('loadEnv', () => {
 		['SESSION_SECRET', 'x'.repeat(31)],
 		['ADMIN_API_TOKEN', 'x'.repeat(31)],
 		['API_BASE_URL', 'not a url'],
-		['ORIGIN', '']
+		['API_BASE_URL', 'api:9201'],
+		['API_BASE_URL', 'ftp://api:9201'],
+		['ORIGIN', ''],
+		['ORIGIN', 'commsgun.example.test']
 	])('rejects %s = %s', (key, value) => {
 		expect(() => loadEnv({ ...valid, [key]: value })).toThrow(key);
 	});
@@ -24,16 +27,21 @@ describe('loadEnv', () => {
 		expect(() => loadEnv({ ...valid, [key]: undefined })).toThrow(key);
 	});
 
-	it('never puts a value in the error', () => {
-		const bad = 'secret-looking-value';
+	it.each([
+		['ADMIN_PASSWORD', 'x'.repeat(15)],
+		['SESSION_SECRET', 'y'.repeat(31)],
+		['ADMIN_API_TOKEN', 'z'.repeat(31)],
+		['API_BASE_URL', 'bad value one'],
+		['ORIGIN', 'bad value two']
+	])('never puts the value of %s in the error', (key, value) => {
 		let message = '';
 		try {
-			loadEnv({ ...valid, API_BASE_URL: bad });
+			loadEnv({ ...valid, [key]: value });
 		} catch (e) {
 			message = (e as Error).message;
 		}
-		expect(message).toContain('API_BASE_URL');
-		expect(message).not.toContain(bad);
+		expect(message).toContain(key);
+		expect(message).not.toContain(value);
 	});
 
 	it('accepts a valid environment', () => {
