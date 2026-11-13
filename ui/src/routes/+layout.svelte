@@ -12,6 +12,10 @@
 	let { data, children }: LayoutProps = $props();
 
 	let refreshing = $state(false);
+	const messagesQuery = $derived.by(() => {
+		const kept = [...page.url.searchParams].filter(([k]) => k !== 'cursor');
+		return kept.length > 0 ? `?${new URLSearchParams(kept)}` : '';
+	});
 
 	async function refresh() {
 		refreshing = true;
@@ -31,7 +35,7 @@
 	<header class="flex items-center gap-1 border-b px-4 py-2">
 		<h1 class="mr-auto font-semibold"><a href={resolve('/')}>commsgun</a></h1>
 		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- keeps the current query -->
-		<a href="/messages{page.url.search}" class={buttonVariants({ variant: 'ghost', size: 'sm' })}
+		<a href="/messages{messagesQuery}" class={buttonVariants({ variant: 'ghost', size: 'sm' })}
 			>Messages</a
 		>
 		<Button

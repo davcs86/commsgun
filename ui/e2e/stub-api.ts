@@ -13,6 +13,8 @@ export type Endpoint = (typeof ENDPOINTS)[number];
 export const HOSTILE_RECIPIENT = '<script>alert(1)</script>@x.io';
 export const HOSTILE_ERROR = 'E'.repeat(300);
 export const MESSAGE_COUNT = 64;
+// A bounced SMS with two failed attempts, so its detail page shows the hostile error text.
+export const HOSTILE_INDEX = 4;
 const PAGE_SIZE = 50;
 const MINUTE = 60_000;
 const DAY = 86_400_000;
@@ -223,7 +225,7 @@ function messageFixtures(scenario: Scenario, now: number) {
 		const errorType = state === 'bounced' ? 'bounced' : state === 'failed' ? 'timeout' : null;
 		const attemptCount = state === 'queued' ? 0 : failed ? 2 : 1;
 		const id = `msg-${String(i + 1).padStart(4, '0')}`;
-		const hostile = scenario === 'hostile' && i === 0;
+		const hostile = scenario === 'hostile' && i === HOSTILE_INDEX;
 		const message = {
 			id,
 			request_id: `req-${String(i + 1).padStart(4, '0')}`,
@@ -287,7 +289,9 @@ function messages(scenario: Scenario, q: URLSearchParams, now: number) {
 	const all = messageFixtures(scenario, now)
 		.map((f) => f.message)
 		.filter((m) => matches(m, q));
-	const start = Number(q.get('cursor') ?? '0') || 0;
+	const cursor = q.get('cursor') ?? '0';
+	if (!/^\d+$/.test(cursor)) return undefined;
+	const start = Number(cursor);
 	const items = all.slice(start, start + PAGE_SIZE);
 	const next = start + PAGE_SIZE < all.length ? String(start + PAGE_SIZE) : null;
 	return { items, next_cursor: next };
@@ -324,7 +328,10 @@ function handleAdmin(state: State, req: IncomingMessage, res: ServerResponse, ur
 	if (route === 'stats') return send(res, 200, stats(s, url.searchParams, now));
 	if (route === 'overview') return send(res, 200, overview(s, now));
 	if (route === 'facets') return send(res, 200, facets(s));
-	if (route === 'messages') return send(res, 200, messages(s, url.searchParams, now));
+	if (route === 'messages') {
+		const page = messages(s, url.searchParams, now);
+		return page ? send(res, 200, page) : send(res, 400, { error: 'invalid_cursor' });
+	}
 	const detail = route.startsWith('messages/')
 		? messageDetail(s, decodeURIComponent(route.slice('messages/'.length)), now)
 		: undefined;
