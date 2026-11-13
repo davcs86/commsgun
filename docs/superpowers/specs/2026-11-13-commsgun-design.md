@@ -336,6 +336,9 @@ Common filters: `from`/`to` (UTC instants), `channel`, `app`, `state`, `error_ty
 The requirement's "sending address/number" is read as the **sender**; the recipient filter is added
 because bounces are investigated by recipient **(call)**.
 
+The stats window is snapped to whole buckets (end rounded up, span rounded up), and the response's
+`from`/`to` are the snapped values — so "last hour" is always exactly 60 one-minute buckets.
+
 **Stats count events by when they happened (call).** In a range, "enqueued" counts messages created
 in it, "sent" those accepted by the provider in it, each final state those that reached it in it, and
 retries/errors the attempts made in it — so "last 1h" answers "what happened in the last hour", and a
@@ -369,7 +372,7 @@ subjects or addresses.
 
 ### 7.1 Stack
 
-SvelteKit (Svelte 5) with the Node adapter, shadcn-svelte components on Tailwind 4, Node 24.
+SvelteKit 3 (Svelte 5) with the Node adapter, shadcn-svelte components on Tailwind 4, Node 24.
 Mobile-first: every page is designed at phone width first and widens to a table/grid layout.
 
 ### 7.2 Login
@@ -444,7 +447,8 @@ buckets are fixed UTC intervals, labelled in local time.
 | `SESSION_SECRET` | Cookie signing key (secret, ≥ 32 characters) |
 | `ADMIN_API_TOKEN` | Shared with the API container (secret) |
 | `API_BASE_URL` | `http://commsgun-api:9201` on the edge |
-| `ORIGIN` | The dashboard's public origin, `https://commsgun.ts.<domain>` (SvelteKit's CSRF check needs it) |
+| `ORIGIN` | The dashboard's public origin, `https://commsgun.ts.<domain>`. The server rejects (400) any request whose derived origin differs, except `/healthz` |
+| `PROTOCOL_HEADER`, `HOST_HEADER`, `ADDRESS_HEADER`, `XFF_DEPTH` | Set **in the image** to `x-forwarded-proto`, `x-forwarded-host`, `x-forwarded-for`, `1`: the Node adapter derives the request origin and the client address (the login limiter's key) from the proxy's headers, not from `ORIGIN`. Safe only because the port is bound to `127.0.0.1` behind Caddy |
 | `PORT` | 9202 |
 
 ### 7.6 Memory ceiling
@@ -507,7 +511,7 @@ through their existing grant.
 |---|---|
 | `commsgun_admin_password` | generated (32 URL-safe chars); the owner reads it with `sops decrypt` or replaces it with `sops set` **(call)** |
 | `commsgun_session_secret`, `commsgun_admin_api_token` | generated |
-| `commsgun_app_keys` | generated, one per registered app |
+| `commsgun_app_key_<app>` | generated, one flat key per registered app (the generator creates flat keys only) |
 | `resend_api_key` | owner-provided, full access |
 | `commsgun_senders` | owner-provided: per app, the allowed `from` addresses and the default **(owner)** |
 

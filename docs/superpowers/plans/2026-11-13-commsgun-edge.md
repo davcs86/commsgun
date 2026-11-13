@@ -28,7 +28,8 @@
 | API image / UI image | `ghcr.io/davcs86/commsgun-api`, `ghcr.io/davcs86/commsgun-ui`; label `org.opencontainers.image.revision` |
 | Ports | API enqueue 9200, API admin 9201 (compose network only), UI 9202 |
 | API env | `COMMSGUN_CONFIG` (JSON), `RESEND_API_KEY`, `ADMIN_API_TOKEN` |
-| UI env | `ADMIN_PASSWORD`, `SESSION_SECRET`, `ADMIN_API_TOKEN`, `API_BASE_URL=http://commsgun-api:9201`, `ORIGIN=https://<dashboard host>` |
+| UI env | `ADMIN_PASSWORD`, `SESSION_SECRET`, `ADMIN_API_TOKEN`, `API_BASE_URL=http://commsgun-api:9201`, `ORIGIN=https://<dashboard host>` (must equal exactly the origin browsers use; the server answers 400 otherwise) |
+| UI proxy headers | The dashboard trusts `X-Forwarded-Proto`, `X-Forwarded-Host` and the last `X-Forwarded-For` entry. Caddy's `reverse_proxy` sets all three by default; do not strip them on the dashboard route, and never publish 9202 beyond `127.0.0.1` |
 | Health | API `GET /healthz`, `GET /healthz/backlog` on 9200; UI `GET /healthz` on 9202 |
 | Body cap | 262144 bytes on the enqueue route |
 | Runtime | both containers uid 10001, read-only root; API data at `/data` (named volume) |

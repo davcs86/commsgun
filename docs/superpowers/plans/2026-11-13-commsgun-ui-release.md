@@ -30,7 +30,7 @@
 | # | Contract | Value |
 |---|---|---|
 | U1 | Dashboard listener | container port `9202`; `GET /healthz` unauthenticated → 200 `{"status":"ok"}` |
-| U2 | Env | `ADMIN_PASSWORD` (≥16 chars), `SESSION_SECRET` (≥32), `ADMIN_API_TOKEN` (≥32), `API_BASE_URL`, `ORIGIN`, `PORT` (default 9202) |
+| U2 | Env | `ADMIN_PASSWORD` (≥16 chars), `SESSION_SECRET` (≥32), `ADMIN_API_TOKEN` (≥32), `API_BASE_URL`, `ORIGIN`, `PORT` (default 9202). Amended during execution: the image itself sets `PROTOCOL_HEADER=x-forwarded-proto`, `HOST_HEADER=x-forwarded-host`, `ADDRESS_HEADER=x-forwarded-for`, `XFF_DEPTH=1` (adapter-node 6 ignores `ORIGIN`; the server compares the derived origin with `ORIGIN`). The reverse proxy must send those three headers |
 | U3 | Images | `ghcr.io/davcs86/commsgun-api` and `ghcr.io/davcs86/commsgun-ui`, tags `<git sha>` and `main`, label `org.opencontainers.image.revision=<git sha>` on both |
 | U4 | Session cookie | name `commsgun_session`; `HttpOnly; Secure; SameSite=Strict; Path=/`; lifetime 12 h |
 
