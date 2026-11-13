@@ -87,8 +87,15 @@ func BucketFor(d time.Duration) time.Duration {
 	return constants.BucketLast
 }
 
+// escapeLike folds ASCII letters only, matching SQLite's lower(), and escapes LIKE wildcards.
 func escapeLike(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(strings.ToLower(s))
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(string(b))
 }
 
 // where builds the message-level conditions on alias m; error_type is handled by each caller.
@@ -118,6 +125,11 @@ func joinAnd(conds []string) string {
 	return strings.Join(conds, " AND ")
 }
 
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // metric is one counted event kind: which table and timestamp column place it in time.
 type metric struct {
 	attempts bool
@@ -126,7 +138,7 @@ type metric struct {
 	extraArg any
 }
 
-func (s *Store) bucketCounts(ctx context.Context, f Filter, m metric, bucketMS int64) (map[int64]int, error) {
+func bucketCounts(ctx context.Context, qr querier, f Filter, m metric, bucketMS int64) (map[int64]int, error) {
 	conds, args := f.where()
 	from := `messages m`
 	if m.attempts {
@@ -145,7 +157,7 @@ func (s *Store) bucketCounts(ctx context.Context, f Filter, m metric, bucketMS i
 	conds = append(conds, m.col+`>=?`, m.col+`<?`)
 	args = append(args, f.From.UnixMilli(), f.To.UnixMilli())
 	q := fmt.Sprintf(`SELECT (%s/?)*? AS b, COUNT(*) FROM %s WHERE %s GROUP BY b`, m.col, from, joinAnd(conds))
-	rows, err := s.r.QueryContext(ctx, q, append([]any{bucketMS, bucketMS}, args...)...)
+	rows, err := qr.QueryContext(ctx, q, append([]any{bucketMS, bucketMS}, args...)...)
 	if err != nil {
 		return nil, translate(err)
 	}
@@ -162,17 +174,26 @@ func (s *Store) bucketCounts(ctx context.Context, f Filter, m metric, bucketMS i
 	return out, translate(rows.Err())
 }
 
-// Stats counts events by when they happened inside [f.From, f.To); queued_now ignores the range.
+// Stats counts events by when they happened inside whole buckets covering the request;
+// queued_now ignores the range. Reads share one snapshot.
 func (s *Store) Stats(ctx context.Context, f Filter, now time.Time) (Stats, error) {
-	f.From, f.To = f.From.UTC(), f.To.UTC()
 	bucket := BucketFor(f.To.Sub(f.From))
 	bms := bucket.Milliseconds()
+	ceil := func(v int64) int64 { return (v + bms - 1) / bms * bms }
+	to := ceil(f.To.UTC().UnixMilli())
+	f.From, f.To = time.UnixMilli(to-ceil(f.To.Sub(f.From).Milliseconds())).UTC(), time.UnixMilli(to).UTC()
 	st := Stats{From: f.From, To: f.To, BucketSeconds: int64(bucket / time.Second),
 		Series: []SeriesPoint{}, ByErrorType: []ErrorTypeCount{}, ByApp: []AppCount{}, ByChannel: []ChannelCount{}}
 
-	first := (f.From.UnixMilli() / bms) * bms
+	tx, err := s.r.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Stats{}, translate(err)
+	}
+	defer tx.Rollback()
+	var qr querier = tx
+
 	index := map[int64]int{}
-	for b := first; b < f.To.UnixMilli(); b += bms {
+	for b := f.From.UnixMilli(); b < to; b += bms {
 		index[b] = len(st.Series)
 		st.Series = append(st.Series, SeriesPoint{T: time.UnixMilli(b).UTC()})
 	}
@@ -196,7 +217,7 @@ func (s *Store) Stats(ctx context.Context, f Filter, now time.Time) (Stats, erro
 		{metric{attempts: true, col: `a.started_at`, extra: `a.n>?`, extraArg: 1}, func(p *SeriesPoint) *int { return &p.Retries }, &st.Totals.Retries},
 	}
 	for _, t := range targets {
-		counts, err := s.bucketCounts(ctx, f, t.m, bms)
+		counts, err := bucketCounts(ctx, qr, f, t.m, bms)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -210,20 +231,19 @@ func (s *Store) Stats(ctx context.Context, f Filter, now time.Time) (Stats, erro
 		}
 	}
 
-	var err error
-	if st.Totals.QueuedNow, err = s.queuedNow(ctx, f); err != nil {
+	if st.Totals.QueuedNow, err = queuedNow(ctx, qr, f); err != nil {
 		return Stats{}, err
 	}
-	if st.ByErrorType, err = s.errorBreakdown(ctx, f); err != nil {
+	if st.ByErrorType, err = errorBreakdown(ctx, qr, f); err != nil {
 		return Stats{}, err
 	}
-	if st.ByApp, st.ByChannel, err = s.enqueuedBreakdown(ctx, f); err != nil {
+	if st.ByApp, st.ByChannel, err = enqueuedBreakdown(ctx, qr, f); err != nil {
 		return Stats{}, err
 	}
 	return st, nil
 }
 
-func (s *Store) queuedNow(ctx context.Context, f Filter) (int, error) {
+func queuedNow(ctx context.Context, qr querier, f Filter) (int, error) {
 	conds, args := f.where()
 	conds = append(conds, `m.state IN (?,?)`)
 	args = append(args, string(model.StateQueued), string(model.StateSending))
@@ -231,14 +251,14 @@ func (s *Store) queuedNow(ctx context.Context, f Filter) (int, error) {
 		conds, args = append(conds, `m.error_type=?`), append(args, f.ErrorType)
 	}
 	var n int
-	err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages m WHERE `+joinAnd(conds), args...).Scan(&n)
+	err := qr.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages m WHERE `+joinAnd(conds), args...).Scan(&n)
 	return n, translate(err)
 }
 
-func (s *Store) errorBreakdown(ctx context.Context, f Filter) ([]ErrorTypeCount, error) {
+func errorBreakdown(ctx context.Context, qr querier, f Filter) ([]ErrorTypeCount, error) {
 	counts := map[string]int{}
 	add := func(q string, args ...any) error {
-		rows, err := s.r.QueryContext(ctx, q, args...)
+		rows, err := qr.QueryContext(ctx, q, args...)
 		if err != nil {
 			return translate(err)
 		}
@@ -287,7 +307,7 @@ func (s *Store) errorBreakdown(ctx context.Context, f Filter) ([]ErrorTypeCount,
 	return out, nil
 }
 
-func (s *Store) enqueuedBreakdown(ctx context.Context, f Filter) ([]AppCount, []ChannelCount, error) {
+func enqueuedBreakdown(ctx context.Context, qr querier, f Filter) ([]AppCount, []ChannelCount, error) {
 	conds, args := f.where()
 	conds = append(conds, `m.created_at>=?`, `m.created_at<?`)
 	args = append(args, f.From.UnixMilli(), f.To.UnixMilli())
@@ -297,7 +317,7 @@ func (s *Store) enqueuedBreakdown(ctx context.Context, f Filter) ([]AppCount, []
 	w := joinAnd(conds)
 	apps, chans := []AppCount{}, []ChannelCount{}
 
-	rows, err := s.r.QueryContext(ctx, `SELECT m.app, COUNT(*) AS n FROM messages m WHERE `+w+` GROUP BY m.app ORDER BY n DESC, m.app`, args...)
+	rows, err := qr.QueryContext(ctx, `SELECT m.app, COUNT(*) AS n FROM messages m WHERE `+w+` GROUP BY m.app ORDER BY n DESC, m.app`, args...)
 	if err != nil {
 		return nil, nil, translate(err)
 	}
@@ -314,7 +334,7 @@ func (s *Store) enqueuedBreakdown(ctx context.Context, f Filter) ([]AppCount, []
 		return nil, nil, translate(err)
 	}
 
-	rows, err = s.r.QueryContext(ctx, `SELECT m.channel, COUNT(*) AS n FROM messages m WHERE `+w+` GROUP BY m.channel ORDER BY n DESC, m.channel`, args...)
+	rows, err = qr.QueryContext(ctx, `SELECT m.channel, COUNT(*) AS n FROM messages m WHERE `+w+` GROUP BY m.channel ORDER BY n DESC, m.channel`, args...)
 	if err != nil {
 		return nil, nil, translate(err)
 	}
@@ -371,6 +391,9 @@ func decodeCursor(c string) (int64, string, error) {
 
 // ListMessages pages newest-first by creation time; the returned cursor is "" on the last page.
 func (s *Store) ListMessages(ctx context.Context, f Filter, cursor string, limit int) ([]model.Message, string, error) {
+	if limit <= 0 {
+		limit = constants.AdminPageSize
+	}
 	conds, args := f.where()
 	conds = append(conds, `m.created_at>=?`, `m.created_at<?`)
 	args = append(args, f.From.UTC().UnixMilli(), f.To.UTC().UnixMilli())

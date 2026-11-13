@@ -12,6 +12,8 @@ import (
 	"github.com/davcs86/commsgun/api/internal/model"
 )
 
+var rowSeq int
+
 type row struct {
 	id, app, channel, recipient, sender, state, errType, hold string
 	created                                                   time.Time
@@ -35,7 +37,8 @@ func nilIfEmpty(s string) any {
 func insertRow(t *testing.T, s *Store, r row) string {
 	t.Helper()
 	if r.id == "" {
-		r.id = fmt.Sprintf("m-%d", time.Now().UnixNano())
+		rowSeq++
+		r.id = fmt.Sprintf("m-%d", rowSeq)
 	}
 	if r.app == "" {
 		r.app = "app1"
@@ -150,38 +153,42 @@ func TestStatsQueuedNowIgnoresRange(t *testing.T) {
 
 func TestStatsSeriesIsDense(t *testing.T) {
 	s := newStore(t)
+	ctx := context.Background()
 	insertRow(t, s, row{id: "a", created: t0.Add(-30 * time.Minute)})
-	f := Filter{From: t0.Add(-time.Hour), To: t0}
-	st, err := s.Stats(context.Background(), f, t0)
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name     string
+		to       time.Time
+		span     time.Duration
+		buckets  int
+		bucket   int64
+		wantFrom time.Time
+		wantTo   time.Time
+	}{
+		{"1h unaligned", t0, time.Hour, 60, 60, time.Date(2026, 11, 13, 11, 1, 0, 0, time.UTC), time.Date(2026, 11, 13, 12, 1, 0, 0, time.UTC)},
+		{"1h aligned", time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC), time.Hour, 60, 60, time.Date(2026, 11, 13, 11, 0, 0, 0, time.UTC), time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)},
+		{"24h unaligned", t0, 24 * time.Hour, 96, 900, time.Date(2026, 11, 12, 12, 15, 0, 0, time.UTC), time.Date(2026, 11, 13, 12, 15, 0, 0, time.UTC)},
+		{"30d unaligned", t0, 30 * 24 * time.Hour, 30, 86400, time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)},
 	}
-	if st.BucketSeconds != 60 {
-		t.Fatalf("bucket_seconds = %d", st.BucketSeconds)
-	}
-	// t0 is 12:00:30, so the range straddles 61 minute buckets.
-	if len(st.Series) != 61 {
-		t.Fatalf("series = %d buckets, want 61", len(st.Series))
-	}
-	nonzero := 0
-	for i, b := range st.Series {
-		if b.T.Second() != 0 || b.T.Location() != time.UTC {
-			t.Fatalf("bucket %d not aligned: %v", i, b.T)
+	for _, c := range cases {
+		st, err := s.Stats(ctx, Filter{From: c.to.Add(-c.span), To: c.to}, t0)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if i > 0 && b.T.Sub(st.Series[i-1].T) != time.Minute {
-			t.Fatalf("bucket %d gap", i)
+		if len(st.Series) != c.buckets || st.BucketSeconds != c.bucket || !st.From.Equal(c.wantFrom) || !st.To.Equal(c.wantTo) {
+			t.Fatalf("%s: %d buckets, bucket_seconds %d, %v..%v", c.name, len(st.Series), st.BucketSeconds, st.From, st.To)
 		}
-		if b.Enqueued > 0 {
-			nonzero++
+		step := time.Duration(c.bucket) * time.Second
+		for i, b := range st.Series {
+			if !b.T.Equal(b.T.Truncate(step)) || b.T.Location() != time.UTC || (i > 0 && b.T.Sub(st.Series[i-1].T) != step) {
+				t.Fatalf("%s: bucket %d misaligned: %v", c.name, i, b.T)
+			}
 		}
-	}
-	if nonzero != 1 || st.Totals.Enqueued != 1 {
-		t.Fatalf("nonzero=%d totals=%+v", nonzero, st.Totals)
-	}
-	g := Filter{From: time.Date(2026, 11, 13, 11, 0, 0, 0, time.UTC), To: time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)}
-	st, err = s.Stats(context.Background(), g, t0)
-	if err != nil || len(st.Series) != 60 {
-		t.Fatalf("aligned 1h range: %d buckets, err %v", len(st.Series), err)
+		if !st.Series[0].T.Equal(st.From) || !st.Series[len(st.Series)-1].T.Add(step).Equal(st.To) {
+			t.Fatalf("%s: series does not span from..to", c.name)
+		}
+		if c.span <= 24*time.Hour && st.Totals.Enqueued != 1 {
+			t.Fatalf("%s: totals %+v", c.name, st.Totals)
+		}
 	}
 }
 
@@ -277,6 +284,17 @@ func TestListMessagesPaging(t *testing.T) {
 	}
 }
 
+func TestListMessagesNonPositiveLimit(t *testing.T) {
+	s := newStore(t)
+	insertRow(t, s, row{id: "a", created: t0})
+	for _, l := range []int{0, -3} {
+		items, _, err := s.ListMessages(context.Background(), Filter{From: t0.Add(-time.Hour), To: t0.Add(time.Hour)}, "", l)
+		if err != nil || len(items) != 1 {
+			t.Fatalf("limit %d: %d %v", l, len(items), err)
+		}
+	}
+}
+
 func TestListMessagesSameMillisecondTieBreak(t *testing.T) {
 	s := newStore(t)
 	for i := 0; i < 5; i++ {
@@ -345,7 +363,7 @@ func TestGetMessage(t *testing.T) {
 
 func TestFilterTextIsLiteral(t *testing.T) {
 	s := newStore(t)
-	for i, r := range []string{"a_b@x.io", "aXb@x.io", "100%@x.io"} {
+	for i, r := range []string{"a_b@x.io", "aXb@x.io", "100%@x.io", "José@É.io"} {
 		insertRow(t, s, row{id: fmt.Sprintf("r%d", i), recipient: r, sender: r, created: t0.Add(-time.Minute)})
 	}
 	ids := func(f Filter) string {
@@ -380,6 +398,12 @@ func TestFilterTextIsLiteral(t *testing.T) {
 		}
 		if got := ids(with("A_B@X")); got != "r0" {
 			t.Errorf("%s case-insensitive = %q", field, got)
+		}
+		if got := ids(with("É.IO")); got != "r3" {
+			t.Errorf("%s non-ascii = %q", field, got)
+		}
+		if got := ids(with("é.io")); got != "" {
+			t.Errorf("%s non-ascii other case = %q", field, got)
 		}
 		if got := ids(with(`\`)); got != "" {
 			t.Errorf("%s backslash = %q", field, got)

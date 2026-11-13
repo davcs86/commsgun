@@ -114,9 +114,9 @@ func (h *handler) filter(r *http.Request) (store.Filter, error) {
 	if f.State != "" && !knownState(model.State(f.State)) {
 		return f, bad("unknown state", "state")
 	}
-	for field, v := range map[string]string{"app": f.App, "error_type": f.ErrorType, "recipient": f.Recipient, "sender": f.Sender} {
-		if len(v) > constants.AdminFilterMaxLen {
-			return f, bad("filter text too long", field)
+	for _, t := range []struct{ field, v string }{{"app", f.App}, {"error_type", f.ErrorType}, {"recipient", f.Recipient}, {"sender", f.Sender}} {
+		if len(t.v) > constants.AdminFilterMaxLen {
+			return f, bad("filter text too long", t.field)
 		}
 	}
 	return f, nil

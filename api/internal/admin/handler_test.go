@@ -116,6 +116,12 @@ func TestAdminBadParams(t *testing.T) {
 			}
 		}
 	}
+	both := "/admin/v1/stats?sender=" + long + "&recipient=" + long + "&app=" + long
+	for i := 0; i < 20; i++ {
+		if rec := do(h, http.MethodGet, both, "Bearer "+token); !strings.Contains(rec.Body.String(), `"field":"app"`) {
+			t.Fatalf("field not deterministic: %s", rec.Body)
+		}
+	}
 	rec := do(h, http.MethodGet, "/admin/v1/messages?cursor=@@", "Bearer "+token)
 	if rec.Code != 400 || !strings.Contains(rec.Body.String(), `"field":"cursor"`) {
 		t.Errorf("bad cursor = %d %s", rec.Code, rec.Body)
@@ -162,7 +168,7 @@ func TestAdminEndpointsShape(t *testing.T) {
 			t.Errorf("stats missing %q", k)
 		}
 	}
-	if stats["to"] != now.Format(time.RFC3339Nano) || stats["from"] != now.Add(-time.Hour).Format(time.RFC3339Nano) {
+	if stats["to"] != "2026-11-13T12:01:00Z" || stats["from"] != "2026-11-13T11:01:00Z" {
 		t.Errorf("default range from=%v to=%v", stats["from"], stats["to"])
 	}
 	if stats["totals"].(map[string]any)["enqueued"].(float64) != 1 {
