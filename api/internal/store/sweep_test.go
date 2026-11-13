@@ -187,3 +187,43 @@ func TestPing(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSweepSentDeletedUnfinishedKept(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	oldAt := t0.Add(-constants.Retention - 24*time.Hour)
+	sent := enqueueOne(t, s, "sent", oldAt)
+	sending := enqueueOne(t, s, "sending", oldAt)
+	addAttempt(t, s, sent)
+	addAttempt(t, s, sending)
+	if _, err := s.w.Exec(`UPDATE messages SET state=?, final_at=? WHERE id=?`, model.StateSent, oldAt.UnixMilli(), sent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.w.Exec(`UPDATE messages SET state=?, locked_until=?, expires_at=? WHERE id=?`,
+		model.StateSending, t0.Add(time.Minute).UnixMilli(), t0.Add(time.Hour).UnixMilli(), sending); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.Sweep(ctx, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Messages != 1 || res.Requests != 1 {
+		t.Fatalf("res = %+v", res)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=?`, sent); n != 0 {
+		t.Fatal("old sent row kept")
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM attempts WHERE message_id=?`, sent); n != 0 {
+		t.Fatal("old sent attempts kept")
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=?`, sending); n != 1 {
+		t.Fatal("live sending row deleted")
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM attempts WHERE message_id=?`, sending); n != 1 {
+		t.Fatal("live sending attempts deleted")
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM requests`); n != 1 {
+		t.Fatalf("request of kept message deleted, requests = %d", n)
+	}
+}

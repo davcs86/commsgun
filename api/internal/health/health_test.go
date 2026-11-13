@@ -67,6 +67,7 @@ func TestBacklog(t *testing.T) {
 		body string
 	}{
 		{"14m", &fakeStore{ok: true, oldest: now.Add(-14 * time.Minute)}, 200, `{"status":"ok"}`},
+		{"exactly threshold", &fakeStore{ok: true, oldest: now.Add(-constants.BacklogThreshold)}, 200, `{"status":"ok"}`},
 		{"16m", &fakeStore{ok: true, oldest: now.Add(-16 * time.Minute)}, 503, `{"oldest_due_seconds":960,"status":"backlog"}`},
 		{"none dispatchable", &fakeStore{}, 200, `{"status":"ok"}`},
 		{"db error", &fakeStore{backlogErr: errors.New("x")}, 503, `{"reason":"db","status":"unavailable"}`},

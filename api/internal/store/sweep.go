@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/davcs86/commsgun/api/internal/constants"
+	"github.com/davcs86/commsgun/api/internal/model"
 )
 
 type SweepResult struct{ Expired, Messages, Requests, Counters int }
@@ -23,10 +24,12 @@ func (s *Store) Sweep(ctx context.Context, now time.Time) (res SweepResult, err 
 
 	cutoff := now.Add(-constants.Retention).UnixMilli()
 	if _, err = tx.ExecContext(ctx,
-		`DELETE FROM attempts WHERE message_id IN (SELECT id FROM messages WHERE created_at<?)`, cutoff); err != nil {
+		`DELETE FROM attempts WHERE message_id IN (SELECT id FROM messages WHERE created_at<? AND state NOT IN (?,?))`,
+		cutoff, model.StateQueued, model.StateSending); err != nil {
 		return res, translate(err)
 	}
-	r, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE created_at<?`, cutoff)
+	r, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE created_at<? AND state NOT IN (?,?)`,
+		cutoff, model.StateQueued, model.StateSending)
 	if err != nil {
 		return res, translate(err)
 	}
