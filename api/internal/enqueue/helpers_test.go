@@ -55,6 +55,7 @@ type fakeStore struct {
 	calls []store.EnqueueInput
 	res   store.EnqueueResult
 	err   error
+	look  *lookup
 	enter chan struct{} // when set, Enqueue signals here then waits for release
 	hold  chan struct{}
 }
@@ -69,6 +70,32 @@ func (f *fakeStore) Enqueue(_ context.Context, _ time.Time, in store.EnqueueInpu
 		<-f.hold
 	}
 	return res, err
+}
+
+type lookup struct {
+	hash [32]byte
+	res  store.EnqueueResult
+}
+
+func (f *fakeStore) LookupRequest(context.Context, string, string) ([32]byte, store.EnqueueResult, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.look == nil {
+		return [32]byte{}, store.EnqueueResult{}, false, nil
+	}
+	r := f.look.res
+	r.Duplicate = true
+	return f.look.hash, r, true, nil
+}
+
+// remember makes the double answer lookups as if body had been accepted earlier.
+func (f *fakeStore) remember(t *testing.T, body string) {
+	t.Helper()
+	_, h, verr := parse([]byte(body))
+	if verr != nil {
+		t.Fatal(verr)
+	}
+	f.look = &lookup{hash: h, res: f.res}
 }
 
 func (f *fakeStore) last(t *testing.T) store.EnqueueInput {

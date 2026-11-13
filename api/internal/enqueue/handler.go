@@ -26,7 +26,6 @@ const (
 	headerKey         = "Idempotency-Key"
 	bearerPrefix      = "bearer "
 	contentTypeJSON   = "application/json"
-	retryAfterBusy    = "1"
 	errUnauthorized   = "unauthorized"
 	errUnavailable    = "unavailable"
 	errNotAllowed     = "channel_not_allowed"
@@ -43,6 +42,7 @@ var keyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
 // Enqueuer is the one store method the handler needs.
 type Enqueuer interface {
 	Enqueue(ctx context.Context, now time.Time, in store.EnqueueInput) (store.EnqueueResult, error)
+	LookupRequest(ctx context.Context, app, idempotencyKey string) (hash [32]byte, res store.EnqueueResult, found bool, err error)
 }
 
 type handler struct {
@@ -124,7 +124,28 @@ func (h *handler) serve(w *statusWriter, r *http.Request, now time.Time, info *l
 		return
 	}
 
-	in, verr := Validate(app, body, now)
+	req, hash, verr := parse(body)
+	if verr != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": verr.Message, "field": verr.Field})
+		return
+	}
+
+	prev, res, found, err := h.st.LookupRequest(r.Context(), app.ID, key)
+	if err != nil {
+		h.storeError(w, err)
+		return
+	}
+	if found {
+		if prev != hash {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": errIdemConflict})
+			return
+		}
+		info.requestID = res.RequestID
+		writeAccepted(w, res)
+		return
+	}
+
+	in, verr := validateRequest(app, &req, hash, now)
 	if verr != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": verr.Message, "field": verr.Field})
 		return
@@ -145,12 +166,16 @@ func (h *handler) serve(w *statusWriter, r *http.Request, now time.Time, info *l
 		in.Held = true
 	}
 
-	res, err := h.st.Enqueue(r.Context(), now, *in)
+	res, err = h.st.Enqueue(r.Context(), now, *in)
 	if err != nil {
 		h.storeError(w, err)
 		return
 	}
 	info.requestID = res.RequestID
+	writeAccepted(w, res)
+}
+
+func writeAccepted(w http.ResponseWriter, res store.EnqueueResult) {
 	status := http.StatusAccepted
 	if res.Duplicate {
 		status = http.StatusOK
@@ -172,19 +197,24 @@ func (h *handler) storeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrIdempotencyConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": errIdemConflict})
 	case errors.As(err, &rl):
-		secs := int(math.Ceil(rl.RetryAfter.Seconds()))
-		w.Header().Set("Retry-After", strconv.Itoa(max(secs, 1)))
+		w.Header().Set("Retry-After", retryAfterSeconds(rl.RetryAfter))
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": errRateLimited, "window": rl.Window})
 	case errors.Is(err, store.ErrQueueFull), errors.Is(err, store.ErrBusy):
 		unavailable(w)
 	default:
-		h.log.Error("enqueue store failure", "err", err.Error())
+		h.log.Error("enqueue store failure")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": errInternal})
 	}
 }
 
+// retryAfterSeconds rounds up and never advertises less than RetryAfterBusy.
+func retryAfterSeconds(d time.Duration) string {
+	d = max(d, constants.RetryAfterBusy)
+	return strconv.Itoa(int(math.Ceil(d.Seconds())))
+}
+
 func unavailable(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", retryAfterBusy)
+	w.Header().Set("Retry-After", retryAfterSeconds(constants.RetryAfterBusy))
 	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": errUnavailable})
 }
 

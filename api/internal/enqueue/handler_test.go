@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/davcs86/commsgun/api/internal/clock"
 	"github.com/davcs86/commsgun/api/internal/constants"
 	"github.com/davcs86/commsgun/api/internal/model"
 	"github.com/davcs86/commsgun/api/internal/store"
@@ -318,5 +320,76 @@ func TestLogCarriesNoSecrets(t *testing.T) {
 	}
 	if m["status"] != float64(202) || m["app"] != testApp || m["channel"] != "email" || m["recipients"] != float64(1) || m["request_id"] != "req-1" {
 		t.Fatalf("log %v", m)
+	}
+}
+
+func TestRepeatAfterExpiryIsOriginalResult(t *testing.T) {
+	body := `{"channel":"email","to":["a@example.com"],"subject":"s","text":"t","expires_at":"2026-11-13T12:05:00Z"}`
+	st := okStore()
+	st.remember(t, body)
+	clk := clock.NewFake(testNow.Add(time.Hour))
+	h := NewHandler(testConfig(), st, clk, newLogger(io.Discard))
+	w := do(h, newReq(body))
+	m := jsonBody(t, w.Body)
+	if w.Code != 200 || m["duplicate"] != true || m["request_id"] != "req-1" || st.called() != 0 {
+		t.Fatalf("%d %s calls=%d", w.Code, w.Body, st.called())
+	}
+}
+
+func TestRepeatSkipsValidationAfterConfigChange(t *testing.T) {
+	body := `{"channel":"email","to":["a@example.com","b@example.com","c@example.com"],"from":"Gone <gone@example.com>","subject":"s","text":"t"}`
+	st := okStore()
+	st.remember(t, body)
+	w := do(newHandler(testConfig(), st), newReq(body, header(headerApp, "tiny")))
+	if w.Code != 200 || jsonBody(t, w.Body)["duplicate"] != true || st.called() != 0 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+func TestSameKeyDifferentBodyAfterExpiryIs409(t *testing.T) {
+	old := `{"channel":"email","to":["a@example.com"],"subject":"s","text":"t","expires_at":"2026-11-13T12:05:00Z"}`
+	st := okStore()
+	st.remember(t, old)
+	clk := clock.NewFake(testNow.Add(time.Hour))
+	h := NewHandler(testConfig(), st, clk, newLogger(io.Discard))
+	w := do(h, newReq(`{"channel":"email","to":["a@example.com"],"subject":"s","text":"changed"}`))
+	if w.Code != 409 || jsonBody(t, w.Body)["error"] != "idempotency_conflict" {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+func TestAuthBeatsKeyCheck(t *testing.T) {
+	w := do(newHandler(testConfig(), okStore()),
+		newReq(testBody, header("Authorization", "Bearer "+strings.Repeat("z", 40)), noHeader(headerKey)))
+	if w.Code != 401 {
+		t.Fatalf("got %d", w.Code)
+	}
+}
+
+func TestMalformedBodyForDisabledChannelIs422(t *testing.T) {
+	w := do(newHandler(testConfig(), okStore()),
+		newReq(`{"channel":"sms","to":["nope"],"body":"x"}`, header(headerApp, "emailonly")))
+	if w.Code != 422 || jsonBody(t, w.Body)["field"] != "to" {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+func TestTooManyRecipientsForLimitIs422(t *testing.T) {
+	st := okStore()
+	w := do(newHandler(testConfig(), st),
+		newReq(`{"channel":"email","to":["a@e.co","b@e.co","c@e.co"],"subject":"s","text":"t"}`, header(headerApp, "tiny")))
+	m := jsonBody(t, w.Body)
+	if w.Code != 422 || m["error"] != "too_many_recipients_for_limit" || m["field"] != "to" || st.called() != 0 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+func TestStoreFailureLogsNoErrorText(t *testing.T) {
+	var buf bytes.Buffer
+	st := okStore()
+	st.err = errors.New("row data: secret-rcpt@example.com")
+	do(NewHandler(testConfig(), st, fakeClock(), newLogger(&buf)), newReq(testBody))
+	if strings.Contains(buf.String(), "secret-rcpt") {
+		t.Fatalf("log leaks store error: %s", buf.String())
 	}
 }

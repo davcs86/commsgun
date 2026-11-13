@@ -29,6 +29,7 @@ const (
 	AttemptMessageMaxLen = 300
 	AdminPageSize        = 50
 	SQLiteBusyTimeout    = 5 * time.Second
+	RetryAfterBusy       = time.Second
 
 	ProviderResponseMaxBytes = 64 << 10
 )

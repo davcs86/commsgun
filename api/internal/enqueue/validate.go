@@ -45,30 +45,44 @@ func invalid(msg, field string) (*store.EnqueueInput, *ValidationError) {
 	return nil, &ValidationError{Message: msg, Field: field}
 }
 
-// Validate fills the request-derived fields of EnqueueInput; the caller owns key, source and limits.
-func Validate(app *config.App, raw []byte, now time.Time) (*store.EnqueueInput, *ValidationError) {
+// parse decodes the body and hashes its canonical form; it depends on neither time nor config.
+func parse(raw []byte) (request, [32]byte, *ValidationError) {
 	var req request
+	var zero [32]byte
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&req); err != nil {
 		var te *json.UnmarshalTypeError
 		if errors.As(err, &te) {
-			return invalid("invalid_json", te.Field)
+			return req, zero, &ValidationError{Message: "invalid_json", Field: te.Field}
 		}
-		return invalid("invalid_json", "")
+		return req, zero, &ValidationError{Message: "invalid_json"}
 	}
 	if dec.More() {
-		return invalid("invalid_json", "")
+		return req, zero, &ValidationError{Message: "invalid_json"}
 	}
 	canonical, err := json.Marshal(req)
 	if err != nil {
-		return invalid("invalid_json", "")
+		return req, zero, &ValidationError{Message: "invalid_json"}
 	}
+	return req, sha256.Sum256(canonical), nil
+}
 
+// Validate fills the request-derived fields of EnqueueInput; the caller owns key, source and limits.
+func Validate(app *config.App, raw []byte, now time.Time) (*store.EnqueueInput, *ValidationError) {
+	req, hash, verr := parse(raw)
+	if verr != nil {
+		return nil, verr
+	}
+	return validateRequest(app, &req, hash, now)
+}
+
+func validateRequest(app *config.App, reqp *request, hash [32]byte, now time.Time) (*store.EnqueueInput, *ValidationError) {
+	req := *reqp
 	ch := model.Channel(req.Channel)
 	if ch != model.ChannelEmail && ch != model.ChannelSMS {
 		return invalid("invalid_channel", "channel")
 	}
-	in := &store.EnqueueInput{App: app.ID, Channel: ch, BodyHash: sha256.Sum256(canonical)}
+	in := &store.EnqueueInput{App: app.ID, Channel: ch, BodyHash: hash}
 
 	if n := len(req.To); n < 1 || n > constants.MaxRecipients {
 		return invalid("invalid_recipient_count", fieldTo)
