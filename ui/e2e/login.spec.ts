@@ -3,9 +3,13 @@ import { expect, test, type Page } from '@playwright/test';
 const PASSWORD = 'fake-admin-password-0000';
 const SESSION_COOKIE = 'commsgun_session';
 
-// The limiter is per client address and in memory: the whole file stays at 5 login POSTs
-// before the last test, which sends the 6th.
-test.describe.configure({ mode: 'serial' });
+// Each test posts from its own x-forwarded-for address, so each has its own limiter budget.
+test.beforeEach(async ({ context }, testInfo) => {
+	await context.setExtraHTTPHeaders({
+		'x-forwarded-proto': 'http',
+		'x-forwarded-for': `test-${testInfo.testId}`
+	});
+});
 
 async function submit(page: Page, username: string, password: string) {
 	await page.getByLabel('Username').fill(username);
@@ -81,7 +85,35 @@ test('logout clears the cookie and / redirects to /login', async ({ page, contex
 
 test('the 6th attempt within a minute is rate limited', async ({ page }) => {
 	await page.goto('/login');
+	for (let i = 0; i < 5; i++) {
+		expect((await submit(page, 'admin', 'not-the-password')).status()).toBe(400);
+	}
 	const response = await submit(page, 'admin', PASSWORD);
 	expect(response.status()).toBe(429);
 	await expect(page.getByText('Too many attempts. Try again in a minute.')).toBeVisible();
 });
+
+const guarded: [string, string][] = [
+	['GET', '/loginx'],
+	['GET', '/healthz/x'],
+	['GET', '/login/'],
+	['GET', '/__data.json'],
+	['GET', '/messages/__data.json'],
+	['POST', '/']
+];
+for (const [method, path] of guarded) {
+	test(`unauthenticated ${method} ${path} is never served`, async ({ request }) => {
+		const response = await request.fetch(path, { method, maxRedirects: 0 });
+		const status = response.status();
+		if (status >= 300 && status < 400) {
+			expect(response.headers()['location']).toMatch(/^(\/|\.\.\/)login/);
+		} else if (status === 200) {
+			// SvelteKit data requests answer 200 with a redirect envelope, never page data.
+			const body = await response.json();
+			expect(body).toMatchObject({ type: 'redirect', location: expect.stringMatching(/^\/login/) });
+		} else {
+			expect(status).toBeGreaterThanOrEqual(400);
+			expect(status).toBeLessThan(500);
+		}
+	});
+}

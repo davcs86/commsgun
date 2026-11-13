@@ -1,6 +1,11 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_MS, SESSION_TTL_MS } from './constants';
+import {
+	LOGIN_LIMITER_MAX_KEYS,
+	LOGIN_MAX_ATTEMPTS,
+	LOGIN_WINDOW_MS,
+	SESSION_TTL_MS
+} from './constants';
 import { LoginLimiter, checkPassword, safeNext, signSession, verifySession } from './session';
 
 const SECRET = 'test-secret-0000000000000000000000000';
@@ -34,7 +39,8 @@ describe('session cookie', () => {
 		['truncated signature', validCookie.slice(0, -2)],
 		['trailing char', validCookie + 'x'],
 		['bad signature', 'eyJleHAiOiJ4In0.' + forgedSig],
-		['non-base64 chars', '!!!.???']
+		['non-base64 chars', '!!!.???'],
+		['non-canonical signature', validCookie + '=']
 	])('verifySession(%s) is false and does not throw', (_name, value) => {
 		expect(() => verifySession(SECRET, value, NOW)).not.toThrow();
 		expect(verifySession(SECRET, value, NOW)).toBe(false);
@@ -68,6 +74,21 @@ describe('LoginLimiter', () => {
 	});
 });
 
+describe('LoginLimiter memory', () => {
+	it('drops stale keys and never exceeds the key cap', () => {
+		const limiter = new LoginLimiter();
+		const size = () => (limiter as unknown as { attempts: Map<string, number[]> }).attempts.size;
+		for (let i = 0; i < LOGIN_LIMITER_MAX_KEYS; i++) limiter.allow(`old-${i}`, NOW);
+		expect(size()).toBe(LOGIN_LIMITER_MAX_KEYS);
+		limiter.allow('fresh', NOW + LOGIN_WINDOW_MS);
+		expect(size()).toBe(1);
+		for (let i = 0; i < LOGIN_LIMITER_MAX_KEYS + 50; i++) {
+			limiter.allow(`busy-${i}`, NOW + LOGIN_WINDOW_MS + 1);
+			expect(size()).toBeLessThanOrEqual(LOGIN_LIMITER_MAX_KEYS);
+		}
+	});
+});
+
 describe('safeNext', () => {
 	it.each([
 		['/messages?x=1', '/messages?x=1'],
@@ -77,7 +98,15 @@ describe('safeNext', () => {
 		['https://evil.example', '/'],
 		['messages', '/'],
 		['', '/'],
-		[null, '/']
+		[null, '/'],
+		['/\t/evil.example', '/'],
+		['/\n/evil.example', '/'],
+		['/ /evil.example', '/'],
+		['/\t\\evil.example', '/'],
+		['/login', '/'],
+		['/login?next=/x', '/'],
+		['/logout', '/'],
+		['/messages?range=7d', '/messages?range=7d']
 	])('safeNext(%s) is %s', (input, want) => {
 		expect(safeNext(input)).toBe(want);
 	});

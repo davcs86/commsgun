@@ -10,12 +10,15 @@ const testEnv = {
 	ORIGIN: `http://127.0.0.1:${PORT}`,
 	PROTOCOL_HEADER: 'x-forwarded-proto',
 	HOST_HEADER: 'x-forwarded-host',
+	ADDRESS_HEADER: 'x-forwarded-for',
+	XFF_DEPTH: '1',
 	HOST: '127.0.0.1',
 	PORT: String(PORT)
 };
 
 export default defineConfig({
 	testDir: 'e2e',
+	retries: 0,
 	use: {
 		viewport: { width: 390, height: 844 },
 		baseURL: `http://127.0.0.1:${PORT}`,
