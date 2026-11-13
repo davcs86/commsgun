@@ -2,11 +2,13 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/davcs86/commsgun/api/internal/config"
 	"github.com/davcs86/commsgun/api/internal/constants"
 	"github.com/davcs86/commsgun/api/internal/model"
 	"github.com/davcs86/commsgun/api/internal/provider"
@@ -153,14 +155,94 @@ func TestPollErrorKeepsSchedule(t *testing.T) {
 
 func TestSMSIsNeverPolled(t *testing.T) {
 	e := newEnv(t, 10, 100)
-	id := e.enqueue(t, "k1", time.Hour)
+	e.cfg.Providers[model.ChannelSMS] = &config.ProviderCfg{Name: "fake", PerMinute: 10, PerDay: 100}
+	res, err := e.st.Enqueue(context.Background(), e.clk.Now(), store.EnqueueInput{
+		App: "a", Channel: model.ChannelSMS, IdempotencyKey: "sms", BodyHash: sha256.Sum256([]byte("sms")),
+		Recipients: []string{"+15550100"}, Sender: "S", SMSBody: "code 123",
+		ExpiresAt: e.clk.Now().Add(time.Hour), PerMinute: 100, PerDay: 1000, Provider: "fake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.MessageIDs[0]
 	rec := &recordingProvider{Provider: e.fake}
-	e.tick(t, e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: rec}))
+	e.tick(t, e.workerWith(map[model.Channel]provider.Provider{model.ChannelSMS: rec}))
 	if st, _ := e.state(t, id); st != "sent" {
 		t.Fatalf("state = %s, want sent", st)
 	}
 	if _, _, _, next, _ := e.pollRow(t, id); next != nil {
-		t.Fatalf("next_poll_at = %d, want NULL for a provider without StatusChecker", *next)
+		t.Fatalf("next_poll_at = %d, want NULL for an SMS", *next)
+	}
+}
+
+func TestFailedSendsAreNotScheduled(t *testing.T) {
+	for _, r := range []provider.SendResult{
+		{Outcome: provider.Retryable, ErrorType: model.ErrNetwork},
+		{Outcome: provider.Permanent, ErrorType: model.ErrProviderRejected},
+	} {
+		e := newEnv(t, 10, 100)
+		id := e.enqueue(t, "k1", time.Hour)
+		e.fake.Script(r)
+		e.tick(t, e.worker())
+		if _, _, _, next, _ := e.pollRow(t, id); next != nil {
+			t.Fatalf("outcome %d: next_poll_at = %d, want NULL", r.Outcome, *next)
+		}
+	}
+}
+
+func TestEmailWithoutStatusCheckerIsNotScheduled(t *testing.T) {
+	e := newEnv(t, 10, 100)
+	id := e.enqueue(t, "k1", time.Hour)
+	rec := &recordingProvider{Provider: e.fake}
+	e.tick(t, e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: rec}))
+	if _, _, _, next, _ := e.pollRow(t, id); next != nil {
+		t.Fatalf("next_poll_at = %d, want NULL", *next)
+	}
+}
+
+func TestUnknownStatusAdvancesSchedule(t *testing.T) {
+	e := newEnv(t, 10, 100)
+	id := e.sentMessage(t, "k1")
+	if err := e.st.RecordPoll(context.Background(), e.clk.Now(), id, provider.DeliveryStatus(99)); err != nil {
+		t.Fatal(err)
+	}
+	state, _, _, next, polls := e.pollRow(t, id)
+	if state != "sent" || polls != 1 || next == nil || *next != t0.Add(constants.PollSchedule[1]).UnixMilli() {
+		t.Fatalf("state=%s polls=%d next=%v, want sent 1 sent_at+5m", state, polls, next)
+	}
+}
+
+type failFirstPoll struct {
+	pollStore
+	failed bool
+}
+
+func (f *failFirstPoll) RecordPoll(ctx context.Context, now time.Time, id string, s provider.DeliveryStatus) error {
+	if !f.failed {
+		f.failed = true
+		return errors.New("injected")
+	}
+	return f.pollStore.RecordPoll(ctx, now, id, s)
+}
+
+func TestPollStoreErrorDoesNotAbortBatch(t *testing.T) {
+	e := newEnv(t, 100, 1000)
+	var ids []string
+	for i := range constants.PollBatch {
+		ids = append(ids, e.enqueue(t, "k"+string(rune('a'+i)), time.Hour))
+	}
+	e.tick(t, e.worker())
+	for _, id := range ids {
+		e.fake.SetStatus("fake-"+id, provider.Delivered)
+	}
+	e.clk.Advance(constants.PollSchedule[0])
+	p := e.poller(e.fake)
+	p.st = &failFirstPoll{pollStore: p.st}
+	if err := p.Tick(context.Background()); err == nil {
+		t.Fatal("Tick hid the store error")
+	}
+	if n := e.count(t, `SELECT COUNT(*) FROM messages WHERE state='delivered'`); n != constants.PollBatch-1 {
+		t.Fatalf("delivered = %d, want %d", n, constants.PollBatch-1)
 	}
 }
 

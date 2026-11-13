@@ -149,7 +149,7 @@ func TestRecordAttemptAcceptedDeletesBodies(t *testing.T) {
 	id := enqueueOne(t, s, "k1", t0)
 	claimOne(t, s, t0)
 	now := t0.Add(250 * time.Millisecond)
-	if err := s.RecordAttempt(ctx, now, id, provider.SendResult{Outcome: provider.Accepted, ProviderID: "re_1"}, t0, time.Minute); err != nil {
+	if err := s.RecordAttempt(ctx, now, id, provider.SendResult{Outcome: provider.Accepted, ProviderID: "re_1"}, t0, time.Minute, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=? AND state='sent' AND sent_at=? AND provider_message_id='re_1'
@@ -169,7 +169,7 @@ func TestRecordAttemptRetryableRequeues(t *testing.T) {
 	id := enqueueOne(t, s, "k1", t0)
 	claimOne(t, s, t0)
 	r := provider.SendResult{Outcome: provider.Retryable, ErrorType: model.ErrTimeout, Status: 503, ProviderError: "unavailable", Message: "try later"}
-	if err := s.RecordAttempt(ctx, t0, id, r, t0, 30*time.Second); err != nil {
+	if err := s.RecordAttempt(ctx, t0, id, r, t0, 30*time.Second, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=? AND state='queued' AND attempts=1 AND next_attempt_at=? AND locked_until IS NULL AND subject='hi'`,
@@ -191,7 +191,7 @@ func TestRecordAttemptRetryableExhaustedFails(t *testing.T) {
 	}
 	claimOne(t, s, t0)
 	r := provider.SendResult{Outcome: provider.Retryable, ErrorType: model.ErrNetwork}
-	if err := s.RecordAttempt(ctx, t0, id, r, t0, time.Minute); err != nil {
+	if err := s.RecordAttempt(ctx, t0, id, r, t0, time.Minute, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=? AND state='failed' AND attempts=? AND error_type='network' AND final_at=? AND subject IS NULL AND body_text IS NULL`,
@@ -206,7 +206,7 @@ func TestRecordAttemptPermanentFails(t *testing.T) {
 	id := enqueueOne(t, s, "k1", t0)
 	claimOne(t, s, t0)
 	r := provider.SendResult{Outcome: provider.Permanent, ErrorType: model.ErrInvalidRecipient, Status: 422}
-	if err := s.RecordAttempt(ctx, t0, id, r, t0, time.Minute); err != nil {
+	if err := s.RecordAttempt(ctx, t0, id, r, t0, time.Minute, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=? AND state='failed' AND attempts=1 AND error_type='invalid_recipient' AND final_at=? AND subject IS NULL`,
@@ -221,7 +221,7 @@ func TestRecordAttemptPermanentFails(t *testing.T) {
 func TestRecordAttemptRequiresSending(t *testing.T) {
 	s := newStore(t)
 	id := enqueueOne(t, s, "k1", t0)
-	err := s.RecordAttempt(context.Background(), t0, id, provider.SendResult{Outcome: provider.Accepted, ProviderID: "re_1"}, t0, time.Minute)
+	err := s.RecordAttempt(context.Background(), t0, id, provider.SendResult{Outcome: provider.Accepted, ProviderID: "re_1"}, t0, time.Minute, time.Time{})
 	if err == nil {
 		t.Fatal("RecordAttempt on a queued row succeeded")
 	}
@@ -305,10 +305,10 @@ func TestRecordAttemptEmptyErrorTypeIsUnknown(t *testing.T) {
 	if _, err := s.ClaimDue(ctx, t0, 2, model.ChannelEmail, "resend"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordAttempt(ctx, t0, retry, provider.SendResult{Outcome: provider.Retryable}, t0, time.Minute); err != nil {
+	if err := s.RecordAttempt(ctx, t0, retry, provider.SendResult{Outcome: provider.Retryable}, t0, time.Minute, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordAttempt(ctx, t0, perm, provider.SendResult{Outcome: provider.Permanent}, t0, time.Minute); err != nil {
+	if err := s.RecordAttempt(ctx, t0, perm, provider.SendResult{Outcome: provider.Permanent}, t0, time.Minute, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM attempts WHERE error_type='unknown'`); n != 2 {
@@ -376,5 +376,38 @@ func TestChannelsDoNotMix(t *testing.T) {
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM rate_counters WHERE scope IN ('provider:email:fake','provider:sms:fake') AND window_kind='day'`); n != 2 {
 		t.Fatalf("separate day counters = %d, want 2", n)
+	}
+}
+
+func TestRecordAttemptSchedulesFirstPollAtomically(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	id := enqueueOne(t, s, "k1", t0)
+	claimOne(t, s, t0)
+	poll := t0.Add(time.Minute)
+	if err := s.RecordAttempt(ctx, t0, id, provider.SendResult{Outcome: provider.Accepted, ProviderID: "re_1"}, t0, time.Minute, poll); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=? AND state='sent' AND next_poll_at=?`, id, poll.UnixMilli()); n != 1 {
+		t.Fatal("sent row lacks next_poll_at")
+	}
+}
+
+func TestRecordAttemptNonAcceptedNeverSchedulesPoll(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	retry := enqueueOne(t, s, "k1", t0)
+	perm := enqueueOne(t, s, "k2", t0)
+	claimOne(t, s, t0)
+	claimOne(t, s, t0)
+	poll := t0.Add(time.Minute)
+	if err := s.RecordAttempt(ctx, t0, retry, provider.SendResult{Outcome: provider.Retryable}, t0, time.Minute, poll); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAttempt(ctx, t0, perm, provider.SendResult{Outcome: provider.Permanent}, t0, time.Minute, poll); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE next_poll_at IS NOT NULL`); n != 0 {
+		t.Fatalf("%d rows scheduled for polling", n)
 	}
 }

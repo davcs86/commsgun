@@ -13,13 +13,6 @@ import (
 
 var ErrNotSent = errors.New("store: message is not in state sent")
 
-// SchedulePoll sets the first bounce poll of a sent message.
-func (s *Store) SchedulePoll(ctx context.Context, id string, at time.Time) error {
-	res, err := s.w.ExecContext(ctx,
-		`UPDATE messages SET next_poll_at=? WHERE id=? AND state=?`, at.UTC().UnixMilli(), id, model.StateSent)
-	return affectedSent(res, err)
-}
-
 // DuePolls lists sent messages whose next poll is due, oldest first.
 func (s *Store) DuePolls(ctx context.Context, now time.Time, limit int) ([]model.Message, error) {
 	if limit <= 0 {
@@ -43,13 +36,11 @@ func (s *Store) DuePolls(ctx context.Context, now time.Time, limit int) ([]model
 	return out, translate(rows.Err())
 }
 
-// RecordPoll applies a polled status to a sent message; Pending only advances the schedule.
+// RecordPoll applies a polled status to a sent message; Pending or any unknown status only advances the schedule.
 func (s *Store) RecordPoll(ctx context.Context, now time.Time, id string, st provider.DeliveryStatus) error {
 	var state model.State
 	var et model.ErrorType
 	switch st {
-	case provider.Pending:
-		return s.advancePoll(ctx, now, id)
 	case provider.Delivered:
 		state = model.StateDelivered
 	case provider.Bounced:
@@ -59,7 +50,7 @@ func (s *Store) RecordPoll(ctx context.Context, now time.Time, id string, st pro
 	case provider.Rejected:
 		state, et = model.StateFailed, model.ErrProviderRejected
 	default:
-		return errors.New("store: unknown delivery status")
+		return s.advancePoll(ctx, now, id)
 	}
 	nowMS := now.UTC().UnixMilli()
 	res, err := s.w.ExecContext(ctx,

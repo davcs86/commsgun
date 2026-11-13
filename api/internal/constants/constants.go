@@ -18,7 +18,7 @@ const (
 	SendTimeout          = 15 * time.Second
 	WorkerTick           = time.Second
 	DispatchBatch        = 4
-	PollBatch            = 5
+	PollBatch            = 2
 	WorkerFresh          = 30 * time.Second
 	BacklogThreshold     = 15 * time.Minute
 	SweepInterval        = time.Hour

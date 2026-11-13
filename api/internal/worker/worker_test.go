@@ -425,12 +425,12 @@ type failOnceStore struct {
 	failed bool
 }
 
-func (f *failOnceStore) RecordAttempt(ctx context.Context, now time.Time, id string, r provider.SendResult, started time.Time, backoff time.Duration) error {
+func (f *failOnceStore) RecordAttempt(ctx context.Context, now time.Time, id string, r provider.SendResult, started time.Time, backoff time.Duration, firstPoll time.Time) error {
 	if !f.failed {
 		f.failed = true
 		return errors.New("injected crash")
 	}
-	return f.Store.RecordAttempt(ctx, now, id, r, started, backoff)
+	return f.Store.RecordAttempt(ctx, now, id, r, started, backoff, firstPoll)
 }
 
 func TestCrashBetweenSendAndRecord(t *testing.T) {

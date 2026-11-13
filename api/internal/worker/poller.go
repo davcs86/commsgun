@@ -53,15 +53,16 @@ func (p *Poller) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, m := range due {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return errors.Join(append(errs, ctx.Err())...)
 		}
 		if err := p.poll(ctx, m); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (p *Poller) poll(ctx context.Context, m model.Message) error {

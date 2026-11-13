@@ -151,7 +151,8 @@ func (s *Store) PauseProvider(ctx context.Context, channel model.Channel, provid
 }
 
 // RecordAttempt writes the attempt row and applies its transition; the row must be in state sending.
-func (s *Store) RecordAttempt(ctx context.Context, now time.Time, id string, r provider.SendResult, started time.Time, backoff time.Duration) (err error) {
+// A non-zero firstPoll is stored as next_poll_at in the same update that marks an accepted message sent.
+func (s *Store) RecordAttempt(ctx context.Context, now time.Time, id string, r provider.SendResult, started time.Time, backoff time.Duration, firstPoll time.Time) (err error) {
 	nowMS := now.UTC().UnixMilli()
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
@@ -181,9 +182,13 @@ func (s *Store) RecordAttempt(ctx context.Context, now time.Time, id string, r p
 	switch r.Outcome {
 	case provider.Accepted:
 		outcome = model.OutcomeAccepted
+		var poll any
+		if !firstPoll.IsZero() {
+			poll = firstPoll.UTC().UnixMilli()
+		}
 		_, err = tx.ExecContext(ctx,
-			`UPDATE messages SET state=?, attempts=?, sent_at=?, provider_message_id=?, locked_until=NULL, updated_at=?, `+clearBodies+` WHERE id=?`,
-			model.StateSent, n, nowMS, r.ProviderID, nowMS, id)
+			`UPDATE messages SET state=?, attempts=?, sent_at=?, provider_message_id=?, next_poll_at=?, locked_until=NULL, updated_at=?, `+clearBodies+` WHERE id=?`,
+			model.StateSent, n, nowMS, r.ProviderID, poll, nowMS, id)
 	case provider.Retryable:
 		outcome = model.OutcomeRetryable
 		if n >= constants.MaxAttempts {
