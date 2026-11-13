@@ -28,6 +28,7 @@ type dispatchStore interface {
 	ExpireDue(ctx context.Context, now time.Time) (int, error)
 	ExpireClaimed(ctx context.Context, now time.Time, id string) error
 	ReleaseHeld(ctx context.Context, channel model.Channel, provider string) (int, error)
+	SchedulePoll(ctx context.Context, id string, at time.Time) error
 }
 
 type Worker struct {
@@ -197,6 +198,12 @@ func (w *Worker) send(ctx context.Context, reservedAt time.Time, ch model.Channe
 		w.log.Error("recording attempt failed; lease will expire and the message be resent idempotently",
 			"message_id", m.ID, "error", err)
 		return true, err
+	}
+	if _, ok := p.(provider.StatusChecker); ok && res.Outcome == provider.Accepted {
+		if err := w.st.SchedulePoll(bg, m.ID, now.Add(constants.PollSchedule[0])); err != nil {
+			w.log.Error("scheduling first status poll failed", "message_id", m.ID, "error", err)
+			return true, err
+		}
 	}
 	w.log.Info("send attempt", "message_id", m.ID, "outcome", outcomeName(res.Outcome), "error_type", string(res.ErrorType))
 	return ctx.Err() != nil, ctx.Err()

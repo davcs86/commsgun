@@ -286,7 +286,9 @@ func providerScope(channel model.Channel, name string) string {
 	return fmt.Sprintf("provider:%s:%s", channel, name)
 }
 
-func scanClaimed(row *sql.Row) (ClaimedMessage, error) {
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanClaimed(row rowScanner) (ClaimedMessage, error) {
 	var m ClaimedMessage
 	var hold, errType, prov, provID, subject, text, html, replyTo, sms sql.NullString
 	var created, expires int64
