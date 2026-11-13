@@ -31,6 +31,9 @@ const (
 	AdminPageSize        = 50
 	SQLiteBusyTimeout    = 5 * time.Second
 	RetryAfterBusy       = time.Second
+	PingTimeout          = 2 * time.Second
+	MinuteCounterMaxAge  = time.Hour
+	DayCounterMaxAge     = 48 * time.Hour
 
 	ProviderResponseMaxBytes = 64 << 10
 	RateLimitDefaultPause    = time.Second
