@@ -393,3 +393,40 @@ func TestStoreFailureLogsNoErrorText(t *testing.T) {
 		t.Fatalf("log leaks store error: %s", buf.String())
 	}
 }
+
+func TestUnknownFieldIs422(t *testing.T) {
+	for _, field := range []string{"expire_at", "cc", "attachments"} {
+		st := okStore()
+		body := `{"channel":"email","to":["a@example.com"],"subject":"s","text":"t","` + field + `":["x"]}`
+		w := do(newHandler(testConfig(), st), newReq(body))
+		m := jsonBody(t, w.Body)
+		if w.Code != 422 || m["error"] != "unknown_field" || m["field"] != field || len(m) != 2 {
+			t.Fatalf("%s: %d %s", field, w.Code, w.Body)
+		}
+		if st.called() != 0 {
+			t.Fatalf("%s: store called for a rejected body", field)
+		}
+	}
+}
+
+func TestEveryDocumentedFieldAccepted(t *testing.T) {
+	email := `{"channel":"email","to":["a@example.com"],"from":"` + strings.ReplaceAll(testSend, `"`, `\"`) +
+		`","subject":"s","text":"t","html":"<p>h</p>","reply_to":"r@example.com","expires_at":"2026-11-13T13:00:00Z"}`
+	for _, body := range []string{email, `{"channel":"sms","to":["+15551234567"],"body":"hello","expires_at":"2026-11-13T13:00:00Z"}`} {
+		if w := do(newHandler(testConfig(), okStore()), newReq(body)); w.Code != http.StatusAccepted {
+			t.Fatalf("%s: %d %s", body, w.Code, w.Body)
+		}
+	}
+}
+
+func TestLookupRequestErrorsMapLikeStoreErrors(t *testing.T) {
+	st := okStore()
+	st.lerr = fmt.Errorf("wrapped: %w", store.ErrBusy)
+	assertUnavailable(t, do(newHandler(testConfig(), st), newReq(testBody)))
+	st = okStore()
+	st.lerr = errors.New("boom")
+	w := do(newHandler(testConfig(), st), newReq(testBody))
+	if w.Code != 500 || jsonBody(t, w.Body)["error"] != "internal" || st.called() != 0 {
+		t.Fatalf("%d %s calls=%d", w.Code, w.Body, st.called())
+	}
+}

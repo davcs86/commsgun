@@ -4,6 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +33,7 @@ func (c *countingChecker) Status(ctx context.Context, id string) (provider.Deliv
 }
 
 func (e *env) poller(c provider.StatusChecker) *Poller {
-	return NewPoller(e.st, map[string]provider.StatusChecker{"fake": c}, e.clk, e.logger())
+	return NewPoller(e.st, map[CheckerKey]provider.StatusChecker{{model.ChannelEmail, "fake"}: c}, e.clk, e.logger())
 }
 
 // sentMessage enqueues and dispatches one message; it is sent at the fake clock's current time.
@@ -250,7 +253,7 @@ func TestPollClearsRowWithoutChecker(t *testing.T) {
 	e := newEnv(t, 10, 100)
 	id := e.sentMessage(t, "k1")
 	e.clk.Advance(constants.PollSchedule[0])
-	e.pollTick(t, NewPoller(e.st, map[string]provider.StatusChecker{}, e.clk, e.logger()))
+	e.pollTick(t, NewPoller(e.st, map[CheckerKey]provider.StatusChecker{}, e.clk, e.logger()))
 	state, _, _, next, polls := e.pollRow(t, id)
 	if state != "sent" || next != nil || polls != 0 {
 		t.Fatalf("state=%s next=%v polls=%d, want sent NULL 0", state, next, polls)
@@ -313,5 +316,39 @@ func TestPollLogsIDsOnly(t *testing.T) {
 	e.pollTick(t, e.poller(e.fake))
 	if out := e.logs.String(); !strings.Contains(out, id) || strings.Contains(out, rcpt) {
 		t.Fatalf("log should carry the id and no address: %s", out)
+	}
+}
+
+func TestPollFailureLogsStatusWithoutAddress(t *testing.T) {
+	for _, c := range []struct{ errName, want string }{
+		{"restricted_api_key", `"error":"status http 401 restricted_api_key"`},
+		{"leak-" + rcpt, `"error":"status http 401"`},
+	} {
+		t.Run(c.errName, func(t *testing.T) {
+			e := newEnv(t, 10, 100)
+			e.cfg.Providers[model.ChannelEmail].Name = "resend"
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					fmt.Fprint(w, `{"id":"pid-1"}`)
+					return
+				}
+				w.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprintf(w, `{"statusCode":401,"name":%q,"message":"key cannot read %s"}`, c.errName, rcpt)
+			}))
+			t.Cleanup(srv.Close)
+			rs := provider.NewResend("k", srv.Client(), srv.URL)
+			id := e.enqueueVia(t, "k1", time.Hour, "resend")
+			e.tick(t, e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: rs}))
+			e.clk.Advance(constants.PollSchedule[0])
+			e.logs.Reset()
+			e.pollTick(t, NewPoller(e.st, map[CheckerKey]provider.StatusChecker{{model.ChannelEmail, "resend"}: rs}, e.clk, e.logger()))
+			logs := e.logs.String()
+			if !strings.Contains(logs, "status poll failed") || !strings.Contains(logs, id) || !strings.Contains(logs, c.want) {
+				t.Fatalf("poll failure log lacks id or %s: %s", c.want, logs)
+			}
+			if strings.Contains(logs, "@") {
+				t.Fatalf("poll failure log carries an address: %s", logs)
+			}
+		})
 	}
 }

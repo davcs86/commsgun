@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/mail"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -21,6 +22,8 @@ import (
 const (
 	fieldTo = "to"
 	crlf    = "\r\n"
+	// unknownFieldPrefix is encoding/json's DisallowUnknownFields error text before the quoted name.
+	unknownFieldPrefix = "json: unknown field "
 )
 
 var e164 = regexp.MustCompile(`^\+[1-9][0-9]{1,14}$`)
@@ -50,10 +53,15 @@ func parse(raw []byte) (request, [32]byte, *ValidationError) {
 	var req request
 	var zero [32]byte
 	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		var te *json.UnmarshalTypeError
 		if errors.As(err, &te) {
 			return req, zero, &ValidationError{Message: "invalid_json", Field: te.Field}
+		}
+		if quoted, ok := strings.CutPrefix(err.Error(), unknownFieldPrefix); ok {
+			name, _ := strconv.Unquote(quoted)
+			return req, zero, &ValidationError{Message: "unknown_field", Field: name}
 		}
 		return req, zero, &ValidationError{Message: "invalid_json"}
 	}

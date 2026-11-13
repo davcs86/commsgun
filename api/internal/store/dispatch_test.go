@@ -70,9 +70,15 @@ func TestClaimDueSkipsHeld(t *testing.T) {
 	if _, err := s.Enqueue(context.Background(), t0, in); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ClaimDue(context.Background(), t0, 10, model.ChannelSMS, "")
+	if _, err := s.w.Exec(`UPDATE messages SET provider='twilio'`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ClaimDue(context.Background(), t0, 10, model.ChannelSMS, "twilio")
 	if err != nil || len(got) != 0 {
 		t.Fatalf("claimed %d err %v, want none", len(got), err)
+	}
+	if due, err := s.HasDue(context.Background(), t0, model.ChannelSMS, "twilio"); err != nil || due {
+		t.Fatalf("HasDue = %v (%v) for a held row", due, err)
 	}
 }
 
@@ -409,5 +415,26 @@ func TestRecordAttemptNonAcceptedNeverSchedulesPoll(t *testing.T) {
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE next_poll_at IS NOT NULL`); n != 0 {
 		t.Fatalf("%d rows scheduled for polling", n)
+	}
+}
+
+func TestExpireDueAtIdempotencySafetyMargin(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	in := input("app1", "k1", "b", "r@x.com")
+	in.ExpiresAt = t0.Add(constants.MaxSendWindow)
+	res, err := s.Enqueue(ctx, t0, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoff := t0.Add(constants.MaxSendWindow - constants.IdempotencySafetyMargin)
+	if n, err := s.ExpireDue(ctx, cutoff.Add(-time.Millisecond)); err != nil || n != 0 {
+		t.Fatalf("expired %d (%v) before the margin", n, err)
+	}
+	if n, err := s.ExpireDue(ctx, cutoff); err != nil || n != 1 {
+		t.Fatalf("expired %d (%v) at the margin, want 1", n, err)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM messages WHERE id=? AND state='expired' AND error_type='expired' AND subject IS NULL`, res.MessageIDs[0]); n != 1 {
+		t.Fatal("message not expired at the margin")
 	}
 }

@@ -257,7 +257,7 @@ func TestOpenPragmas(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	for pragma, want := range map[string]int{"auto_vacuum": 2, "foreign_keys": 1, "busy_timeout": int(constants.SQLiteBusyTimeout.Milliseconds())} {
+	for pragma, want := range map[string]int{"auto_vacuum": 2, "foreign_keys": 1, "secure_delete": 1, "busy_timeout": int(constants.SQLiteBusyTimeout.Milliseconds())} {
 		var got int
 		if err := s.w.QueryRow("PRAGMA " + pragma).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s = %d (%v), want %d", pragma, got, err, want)
@@ -270,6 +270,9 @@ func TestOpenPragmas(t *testing.T) {
 	if _, err := s.r.Exec(`DELETE FROM messages`); err == nil {
 		t.Fatal("read pool accepted a write")
 	}
+	if got := s.r.Stats().MaxOpenConnections; got != constants.ReadPoolMax {
+		t.Fatalf("read pool max open = %d, want %d", got, constants.ReadPoolMax)
+	}
 }
 
 func TestTranslateBusy(t *testing.T) {
@@ -279,6 +282,32 @@ func TestTranslateBusy(t *testing.T) {
 	other := errors.New("boom")
 	if err := translate(other); err != other {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRealBusyIsErrBusy(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	other, err := sql.Open("sqlite", "file:"+filepath.Join(dir, dbFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	conn, err := other.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), `BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.ExecContext(context.Background(), `ROLLBACK`)
+	if _, err := s.Enqueue(context.Background(), t0, input("app1", "k1", "b", "r@x.com")); !errors.Is(err, ErrBusy) {
+		t.Fatalf("enqueue under a held write lock: err = %v, want ErrBusy", err)
 	}
 }
 

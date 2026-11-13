@@ -415,6 +415,9 @@ func TestFacets(t *testing.T) {
 	s := newStore(t)
 	id := insertRow(t, s, row{id: "a", app: "b-app", sender: "z@x.com", errType: "bounced", created: t0})
 	insertRow(t, s, row{id: "b", app: "a-app", sender: "a@x.com", created: t0})
+	if _, err := s.w.Exec(`UPDATE messages SET sender='', channel='sms' WHERE id=?`, insertRow(t, s, row{id: "c", app: "a-app", created: t0})); err != nil {
+		t.Fatal(err)
+	}
 	insertAttempt(t, s, id, 1, t0, "retryable", "timeout")
 	f, err := s.Facets(context.Background())
 	if err != nil {
@@ -457,15 +460,16 @@ func TestOverview(t *testing.T) {
 	insertRow(t, s, row{id: "h1", channel: "sms", hold: "no_provider", created: t0.Add(-2 * time.Hour)})
 	insertRow(t, s, row{id: "h2", channel: "sms", hold: "no_provider", created: t0.Add(-time.Hour)})
 	insertRow(t, s, row{id: "done", state: "delivered", created: t0.Add(-5 * time.Hour), final: t0})
+	insertRow(t, s, row{id: "q", created: t0.Add(-30 * time.Minute)})
 
 	ov, err := s.Overview(ctx, t0, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ov.QueueDepth != 4 {
+	if ov.QueueDepth != 5 {
 		t.Fatalf("queue_depth = %d", ov.QueueDepth)
 	}
-	if ov.OldestWaitingAt == nil || !ov.OldestWaitingAt.Equal(t0.Add(-2*time.Hour)) {
+	if ov.OldestWaitingAt == nil || !ov.OldestWaitingAt.Equal(t0.Add(-30*time.Minute)) {
 		t.Fatalf("oldest = %v", ov.OldestWaitingAt)
 	}
 	if len(ov.Providers) != 2 || ov.Providers[0].Channel != "email" || ov.Providers[1].Channel != "sms" {
@@ -500,5 +504,44 @@ func TestOverview(t *testing.T) {
 	empty, err := newStore(t).Overview(ctx, t0, cfg)
 	if err != nil || empty.QueueDepth != 0 || empty.OldestWaitingAt != nil {
 		t.Fatalf("empty %+v %v", empty, err)
+	}
+}
+
+func TestListMessagesErrorTypeMatchesAttempts(t *testing.T) {
+	s := newStore(t)
+	retried := insertRow(t, s, row{id: "retried", state: "sent", created: t0.Add(-30 * time.Minute), sent: t0.Add(-20 * time.Minute)})
+	insertAttempt(t, s, retried, 1, t0.Add(-25*time.Minute), "retryable", "timeout")
+	insertAttempt(t, s, retried, 2, t0.Add(-20*time.Minute), "accepted", "")
+	insertRow(t, s, row{id: "final", state: "failed", errType: "timeout", created: t0.Add(-10 * time.Minute), final: t0.Add(-5 * time.Minute)})
+	insertRow(t, s, row{id: "clean", state: "sent", created: t0.Add(-10 * time.Minute)})
+	f := lastHour()
+	f.ErrorType = "timeout"
+	items, _, err := s.ListMessages(context.Background(), f, "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, m := range items {
+		got = append(got, m.ID)
+	}
+	if strings.Join(got, ",") != "final,retried" {
+		t.Fatalf("error_type=timeout listed %v, want [final retried]", got)
+	}
+}
+
+func TestStatsCountsPollRejectedOnce(t *testing.T) {
+	s := newStore(t)
+	polled := insertRow(t, s, row{id: "polled", state: "failed", errType: "provider_rejected", created: t0.Add(-40 * time.Minute),
+		sent: t0.Add(-40 * time.Minute), final: t0.Add(-10 * time.Minute)})
+	insertAttempt(t, s, polled, 1, t0.Add(-40*time.Minute), "accepted", "")
+	sendRejected := insertRow(t, s, row{id: "send", state: "failed", errType: "provider_rejected", created: t0.Add(-30 * time.Minute),
+		final: t0.Add(-30 * time.Minute)})
+	insertAttempt(t, s, sendRejected, 1, t0.Add(-30*time.Minute), "permanent", "provider_rejected")
+	st, err := s.Stats(context.Background(), lastHour(), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.ByErrorType) != 1 || st.ByErrorType[0] != (ErrorTypeCount{"provider_rejected", 2}) {
+		t.Fatalf("by_error_type = %+v, want provider_rejected 2", st.ByErrorType)
 	}
 }

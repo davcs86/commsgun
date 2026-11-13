@@ -6,7 +6,10 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,6 +19,7 @@ import (
 	"github.com/davcs86/commsgun/api/internal/clock"
 	"github.com/davcs86/commsgun/api/internal/config"
 	"github.com/davcs86/commsgun/api/internal/constants"
+	"github.com/davcs86/commsgun/api/internal/health"
 	"github.com/davcs86/commsgun/api/internal/model"
 	"github.com/davcs86/commsgun/api/internal/provider"
 	"github.com/davcs86/commsgun/api/internal/store"
@@ -71,10 +75,15 @@ func (e *env) logger() *slog.Logger { return slog.New(slog.NewJSONHandler(e.logs
 
 func (e *env) enqueue(t *testing.T, key string, ttl time.Duration) string {
 	t.Helper()
+	return e.enqueueVia(t, key, ttl, "fake")
+}
+
+func (e *env) enqueueVia(t *testing.T, key string, ttl time.Duration, prov string) string {
+	t.Helper()
 	res, err := e.st.Enqueue(context.Background(), e.clk.Now(), store.EnqueueInput{
 		App: "a", Channel: model.ChannelEmail, IdempotencyKey: key, BodyHash: sha256.Sum256([]byte(key)),
 		Recipients: []string{rcpt}, Sender: "S <s@example.com>", Subject: "code 123", Text: "hello",
-		ExpiresAt: e.clk.Now().Add(ttl), PerMinute: 100, PerDay: 1000, Provider: "fake",
+		ExpiresAt: e.clk.Now().Add(ttl), PerMinute: 100, PerDay: 1000, Provider: prov,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -592,5 +601,158 @@ func TestQueuedMessageSurvivesConfigRemoval(t *testing.T) {
 	sent := e.fake.Sent()
 	if len(sent) != 1 || sent[0].ID != id || sent[0].Sender != "S <s@example.com>" || sent[0].App != "a" {
 		t.Fatalf("sent = %+v", sent)
+	}
+}
+
+// slowProvider advances the fake clock by SendTimeout per send and probes /healthz while the send is in flight.
+type slowProvider struct {
+	*provider.Fake
+	clk    *clock.Fake
+	health http.Handler
+	codes  []int
+}
+
+func (s *slowProvider) Send(ctx context.Context, m model.Message, b provider.Body) provider.SendResult {
+	s.clk.Advance(constants.SendTimeout)
+	rec := httptest.NewRecorder()
+	s.health.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	s.codes = append(s.codes, rec.Code)
+	return s.Fake.Send(ctx, m, b)
+}
+
+func TestHealthStaysOkWhileSlowSendsProgress(t *testing.T) {
+	e := newEnv(t, 100, 1000)
+	sp := &slowProvider{Fake: e.fake, clk: e.clk}
+	w := e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: sp})
+	sp.health = health.Handler(e.st, w.LastTick, e.clk, e.cfg.Providers)
+	e.tick(t, w)
+	for i := range constants.DispatchBatch {
+		e.enqueue(t, fmt.Sprintf("k%d", i), time.Hour)
+	}
+	e.tick(t, w)
+	if time.Duration(len(sp.codes))*constants.SendTimeout <= constants.WorkerFresh {
+		t.Fatalf("tick too short to exercise freshness: %d sends", len(sp.codes))
+	}
+	for i, c := range sp.codes {
+		if c != http.StatusOK {
+			t.Fatalf("healthz during send %d = %d, want 200 (codes %v)", i+1, c, sp.codes)
+		}
+	}
+	e.clk.Advance(constants.WorkerFresh + time.Millisecond)
+	rec := httptest.NewRecorder()
+	sp.health.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("healthz after the loop stopped = %d, want 503", rec.Code)
+	}
+}
+
+func TestSendStopsAtIdempotencySafetyMargin(t *testing.T) {
+	cutoff := t0.Add(constants.MaxSendWindow - constants.IdempotencySafetyMargin)
+	for _, c := range []struct {
+		name  string
+		at    time.Time
+		state string
+		calls int
+	}{
+		{"1ms before", cutoff.Add(-time.Millisecond), "sent", 1},
+		{"at", cutoff, "expired", 0},
+		{"after", cutoff.Add(time.Minute), "expired", 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, 10, 100)
+			id := e.enqueue(t, "k1", constants.MaxSendWindow)
+			rec := &recordingProvider{Provider: e.fake}
+			e.clk.Set(c.at)
+			e.tick(t, e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: rec}))
+			if st, _ := e.state(t, id); st != c.state || len(rec.ids) != c.calls {
+				t.Fatalf("state=%s calls=%d, want %s %d", st, len(rec.ids), c.state, c.calls)
+			}
+		})
+	}
+}
+
+type noExpireStore struct{ *store.Store }
+
+func (noExpireStore) ExpireDue(context.Context, time.Time) (int, error) { return 0, nil }
+
+func TestClaimedMessageExpiredAtIdempotencySafetyMargin(t *testing.T) {
+	e := newEnv(t, 10, 100)
+	id := e.enqueue(t, "k1", constants.MaxSendWindow)
+	e.clk.Set(t0.Add(constants.MaxSendWindow - constants.IdempotencySafetyMargin))
+	rec := &recordingProvider{Provider: e.fake}
+	w, err := newWorker(noExpireStore{e.st}, map[model.Channel]provider.Provider{model.ChannelEmail: rec}, e.cfg, e.clk, e.logger(), half)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.tick(t, w)
+	if len(rec.ids) != 0 {
+		t.Fatal("message inside the safety margin was handed to the provider")
+	}
+	if n := e.count(t, `SELECT COUNT(*) FROM messages WHERE id=? AND state='expired' AND error_type='expired' AND subject IS NULL`, id); n != 1 {
+		t.Fatal("claimed message not expired")
+	}
+	if n := e.count(t, `SELECT COALESCE(SUM(count),0) FROM rate_counters WHERE scope='provider:email:fake'`); n != 0 {
+		t.Fatalf("reservation kept for an unsent message: %d", n)
+	}
+}
+
+func TestProviderAuthFailurePausesWithoutFailing(t *testing.T) {
+	e := newEnv(t, 10, 100)
+	e.cfg.Providers[model.ChannelEmail].Name = "resend"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"statusCode":401,"name":"missing_api_key","message":"Missing API key"}`)
+	}))
+	t.Cleanup(srv.Close)
+	ids := []string{e.enqueueVia(t, "k1", time.Hour, "resend"), e.enqueueVia(t, "k2", time.Hour, "resend")}
+	w := e.workerWith(map[model.Channel]provider.Provider{model.ChannelEmail: provider.NewResend("k", srv.Client(), srv.URL)})
+	e.tick(t, w)
+	if n := e.count(t, `SELECT COUNT(*) FROM provider_pauses WHERE provider='provider:email:resend' AND until=? AND reason='auth'`,
+		t0.Add(constants.AuthPause).UnixMilli()); n != 1 {
+		t.Fatal("provider not paused for AuthPause with reason auth")
+	}
+	for _, id := range ids {
+		if st, n := e.state(t, id); st != "queued" || n != 0 {
+			t.Fatalf("%s: state=%s attempts=%d, want queued 0", id, st, n)
+		}
+	}
+	if n := e.count(t, `SELECT COUNT(*) FROM attempts`); n != 0 {
+		t.Fatalf("attempts recorded for an auth failure: %d", n)
+	}
+}
+
+func TestIdleTickWritesNothing(t *testing.T) {
+	e := newEnv(t, 10, 100)
+	ctx := context.Background()
+	conn, err := e.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	version := func() int {
+		var v int
+		if err := conn.QueryRowContext(ctx, `PRAGMA data_version`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	w := e.worker()
+	before := version()
+	e.tick(t, w)
+	if after := version(); after != before {
+		t.Fatalf("empty tick committed a write: data_version %d -> %d", before, after)
+	}
+	if n := e.count(t, `SELECT COUNT(*) FROM rate_counters`); n != 0 {
+		t.Fatalf("empty tick touched rate_counters: %d rows", n)
+	}
+
+	e.enqueue(t, "k1", time.Hour)
+	e.fake.Script(provider.SendResult{Outcome: provider.Retryable, ErrorType: model.ErrTimeout})
+	e.tick(t, w)
+	e.clk.Advance(time.Second)
+	before = version()
+	e.tick(t, w)
+	if after := version(); after != before {
+		t.Fatalf("tick with nothing due committed a write: data_version %d -> %d", before, after)
 	}
 }

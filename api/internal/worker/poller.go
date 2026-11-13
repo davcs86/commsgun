@@ -20,15 +20,21 @@ type pollStore interface {
 	ClearPoll(ctx context.Context, now time.Time, id string) error
 }
 
+// CheckerKey names the provider instance that sent a message: its channel and provider name.
+type CheckerKey struct {
+	Channel  model.Channel
+	Provider string
+}
+
 // Poller learns the final delivery state of sent emails from their provider.
 type Poller struct {
 	st       pollStore
-	checkers map[string]provider.StatusChecker
+	checkers map[CheckerKey]provider.StatusChecker
 	clk      clock.Clock
 	log      *slog.Logger
 }
 
-func NewPoller(st *store.Store, checkers map[string]provider.StatusChecker, clk clock.Clock, log *slog.Logger) *Poller {
+func NewPoller(st *store.Store, checkers map[CheckerKey]provider.StatusChecker, clk clock.Clock, log *slog.Logger) *Poller {
 	return &Poller{st: st, checkers: checkers, clk: clk, log: log}
 }
 
@@ -69,7 +75,7 @@ func (p *Poller) poll(ctx context.Context, m model.Message) error {
 	bg := context.WithoutCancel(ctx)
 	var checker provider.StatusChecker
 	if m.Provider != nil {
-		checker = p.checkers[*m.Provider]
+		checker = p.checkers[CheckerKey{m.Channel, *m.Provider}]
 	}
 	if checker == nil || m.ProviderMessageID == nil {
 		p.log.Warn("message cannot be polled; polling stopped", "message_id", m.ID)
@@ -84,7 +90,7 @@ func (p *Poller) poll(ctx context.Context, m model.Message) error {
 	}
 	now := p.clk.Now()
 	if err != nil {
-		p.log.Warn("status poll failed", "message_id", m.ID)
+		p.log.Warn("status poll failed", "message_id", m.ID, "error", err.Error())
 		return p.st.RecordPollError(bg, now, m.ID)
 	}
 	if err := p.st.RecordPoll(bg, now, m.ID, status); err != nil {

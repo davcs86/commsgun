@@ -19,6 +19,7 @@ import (
 )
 
 type dispatchStore interface {
+	HasDue(ctx context.Context, now time.Time, channel model.Channel, provider string) (bool, error)
 	ClaimDue(ctx context.Context, now time.Time, limit int, channel model.Channel, provider string) ([]store.ClaimedMessage, error)
 	ProviderReserve(ctx context.Context, now time.Time, channel model.Channel, provider string, perMinute, perDay int) (bool, time.Time, string, error)
 	ProviderRelease(ctx context.Context, now time.Time, channel model.Channel, provider string) error
@@ -94,7 +95,15 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// Tick runs one dispatch pass; it updates LastTick only when the pass completes.
+// beat marks the worker live; it runs before each claim and when a pass completes.
+func (w *Worker) beat() {
+	now := w.clk.Now()
+	w.mu.Lock()
+	w.lastTick = now
+	w.mu.Unlock()
+}
+
+// Tick runs one dispatch pass.
 func (w *Worker) Tick(ctx context.Context) error {
 	start := w.clk.Now()
 	if n, err := w.st.ExpireDue(ctx, start); err != nil {
@@ -112,9 +121,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 			return err
 		}
 	}
-	w.mu.Lock()
-	w.lastTick = start
-	w.mu.Unlock()
+	w.beat()
 	return nil
 }
 
@@ -135,7 +142,11 @@ func (w *Worker) dispatch(ctx context.Context, ch model.Channel) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		w.beat()
 		now := w.clk.Now()
+		if due, err := w.st.HasDue(ctx, now, ch, name); err != nil || !due {
+			return err
+		}
 		ok, _, _, err := w.st.ProviderReserve(ctx, now, ch, name, limits.PerMinute, limits.PerDay)
 		if err != nil || !ok {
 			return err
@@ -146,7 +157,7 @@ func (w *Worker) dispatch(ctx context.Context, ch model.Channel) error {
 			return errors.Join(err, release())
 		}
 		m := claimed[0]
-		if !m.ExpiresAt.After(now) {
+		if !now.Before(store.SendDeadline(m.CreatedAt, m.ExpiresAt)) {
 			if err := w.st.ExpireClaimed(context.WithoutCancel(ctx), now, m.ID); err != nil {
 				return errors.Join(err, release())
 			}

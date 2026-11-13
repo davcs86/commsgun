@@ -284,9 +284,13 @@ func errorBreakdown(ctx context.Context, qr querier, f Filter) ([]ErrorTypeCount
 		return nil, err
 	}
 
+	// A poll-rejected message has no attempt carrying its error type; a send-rejected one was counted above.
 	conds, args = f.where()
-	conds = append(conds, `m.error_type IN (?,?,?)`, `m.final_at>=?`, `m.final_at<?`)
-	args = append(args, string(model.ErrBounced), string(model.ErrComplained), string(model.ErrExpired), f.From.UnixMilli(), f.To.UnixMilli())
+	conds = append(conds, `(m.error_type IN (?,?,?) OR (m.state=? AND m.error_type=?
+		AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.message_id=m.id AND a.error_type=m.error_type)))`,
+		`m.final_at>=?`, `m.final_at<?`)
+	args = append(args, string(model.ErrBounced), string(model.ErrComplained), string(model.ErrExpired),
+		string(model.StateFailed), string(model.ErrProviderRejected), f.From.UnixMilli(), f.To.UnixMilli())
 	if f.ErrorType != "" {
 		conds, args = append(conds, `m.error_type=?`), append(args, f.ErrorType)
 	}
@@ -398,7 +402,8 @@ func (s *Store) ListMessages(ctx context.Context, f Filter, cursor string, limit
 	conds = append(conds, `m.created_at>=?`, `m.created_at<?`)
 	args = append(args, f.From.UTC().UnixMilli(), f.To.UTC().UnixMilli())
 	if f.ErrorType != "" {
-		conds, args = append(conds, `m.error_type=?`), append(args, f.ErrorType)
+		conds = append(conds, `(m.error_type=? OR EXISTS (SELECT 1 FROM attempts a WHERE a.message_id=m.id AND a.error_type=?))`)
+		args = append(args, f.ErrorType, f.ErrorType)
 	}
 	if cursor != "" {
 		ts, id, err := decodeCursor(cursor)
@@ -510,7 +515,7 @@ func (s *Store) Facets(ctx context.Context) (Facets, error) {
 	if f.Apps, err = s.distinct(ctx, `SELECT DISTINCT app FROM messages ORDER BY app LIMIT ?`); err != nil {
 		return f, err
 	}
-	if f.Senders, err = s.distinct(ctx, `SELECT DISTINCT sender FROM messages ORDER BY sender LIMIT ?`); err != nil {
+	if f.Senders, err = s.distinct(ctx, `SELECT DISTINCT sender FROM messages WHERE sender<>'' ORDER BY sender LIMIT ?`); err != nil {
 		return f, err
 	}
 	f.ErrorTypes, err = s.distinct(ctx, `SELECT error_type FROM (SELECT error_type FROM messages UNION SELECT error_type FROM attempts)
@@ -545,12 +550,13 @@ type Overview struct {
 	Providers       []ProviderStatus `json:"providers"`
 }
 
-// Overview reports queue depth and, per channel, provider usage against its limits, any pause and held messages.
+// Overview reports queue depth, the oldest waiting message that is not held and, per channel,
+// provider usage against its limits, any pause and held messages.
 func (s *Store) Overview(ctx context.Context, now time.Time, cfg *config.Config) (Overview, error) {
 	now = now.UTC()
 	ov := Overview{Providers: []ProviderStatus{}}
 	var oldest sql.NullInt64
-	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*), MIN(created_at) FROM messages WHERE state IN (?,?)`,
+	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*), MIN(CASE WHEN hold_reason IS NULL THEN created_at END) FROM messages WHERE state IN (?,?)`,
 		string(model.StateQueued), string(model.StateSending)).Scan(&ov.QueueDepth, &oldest); err != nil {
 		return ov, translate(err)
 	}

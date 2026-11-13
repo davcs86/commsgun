@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,9 @@ import (
 )
 
 const defaultResendURL = "https://api.resend.com"
+
+// errorNamePattern admits only identifier-like provider error names, so no address can reach a log.
+var errorNamePattern = regexp.MustCompile(`^[a-z0-9_]+$`)
 
 type Resend struct {
 	apiKey  string
@@ -109,6 +113,9 @@ func (r *Resend) Send(ctx context.Context, m model.Message, body Body) SendResul
 	return res
 }
 
+// authPause holds the queue rather than failing it: a bad key is the operator's to fix, not the message's.
+var authPause = SendResult{Outcome: Throttled, ErrorType: model.ErrAuth, PauseFor: constants.AuthPause, PauseReason: PauseAuth}
+
 func classify(status int, ae apiError) SendResult {
 	retry := SendResult{Outcome: Retryable, ErrorType: model.ErrProviderUnavailable}
 	perm := func(t model.ErrorType) SendResult { return SendResult{Outcome: Permanent, ErrorType: t} }
@@ -131,10 +138,10 @@ func classify(status int, ae apiError) SendResult {
 			return perm(model.ErrProviderRejected)
 		}
 	case status == http.StatusUnauthorized:
-		return perm(model.ErrAuth)
+		return authPause
 	case status == http.StatusForbidden:
 		if strings.HasSuffix(ae.Name, "_api_key") {
-			return perm(model.ErrAuth)
+			return authPause
 		}
 		if ae.Name == "validation_error" && strings.Contains(strings.ToLower(ae.Message), "domain is not verified") {
 			return perm(model.ErrSenderNotVerified)
@@ -195,6 +202,9 @@ func (r *Resend) Status(ctx context.Context, providerID string) (DeliveryStatus,
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var ae apiError
 		_ = json.Unmarshal(raw, &ae)
+		if !errorNamePattern.MatchString(ae.Name) || len(ae.Name) > constants.ProviderErrorNameMaxLen {
+			return Pending, fmt.Errorf("status http %d", resp.StatusCode)
+		}
 		return Pending, fmt.Errorf("status http %d %s", resp.StatusCode, ae.Name)
 	}
 	var out struct {

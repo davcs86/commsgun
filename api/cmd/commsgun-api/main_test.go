@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/davcs86/commsgun/api/internal/config"
 	"github.com/davcs86/commsgun/api/internal/constants"
 	"github.com/davcs86/commsgun/api/internal/model"
 	"github.com/davcs86/commsgun/api/internal/provider"
 	"github.com/davcs86/commsgun/api/internal/store"
+	"github.com/davcs86/commsgun/api/internal/worker"
 )
 
 const (
@@ -195,6 +197,7 @@ func TestEndToEndWithFakeProvider(t *testing.T) {
 		{"enqueue path on admin listener", http.MethodPost, "http://" + p.adm + "/v1/messages", http.StatusNotFound},
 		{"backlog on enqueue listener", http.MethodGet, "http://" + p.enq + "/healthz/backlog", http.StatusOK},
 		{"backlog on admin listener", http.MethodGet, "http://" + p.adm + "/healthz/backlog", http.StatusNotFound},
+		{"admin API without token", http.MethodGet, "http://" + p.adm + "/admin/v1/messages", http.StatusUnauthorized},
 		{"unknown path", http.MethodGet, "http://" + p.enq + "/nope", http.StatusNotFound},
 	} {
 		if code, body := do(t, tc.method, tc.url, nil, ""); code != tc.want {
@@ -318,8 +321,27 @@ func TestGracefulShutdown(t *testing.T) {
 		t.Fatalf("items=%d err=%v", len(items), err)
 	}
 	for _, m := range items {
-		if m.State == model.StateSending {
-			t.Errorf("message %s stuck in sending", m.ID)
+		if m.State != model.StateSent && m.State != model.StateQueued {
+			t.Errorf("message %s in state %s after shutdown, want sent or queued", m.ID, m.State)
+		}
+	}
+}
+
+func TestBuildProvidersOneCheckerPerChannel(t *testing.T) {
+	cfg := &config.Config{Providers: map[model.Channel]*config.ProviderCfg{
+		model.ChannelEmail: {Name: "fake", PerMinute: 1, PerDay: 1},
+		model.ChannelSMS:   {Name: "fake", PerMinute: 1, PerDay: 1},
+	}}
+	providers, checkers, err := buildProviders(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checkers) != len(providers) {
+		t.Fatalf("%d checkers for %d channels sharing a provider name", len(checkers), len(providers))
+	}
+	for ch, p := range providers {
+		if c := checkers[worker.CheckerKey{Channel: ch, Provider: "fake"}]; c != p.(provider.StatusChecker) {
+			t.Fatalf("%s checker is not that channel's provider instance", ch)
 		}
 	}
 }

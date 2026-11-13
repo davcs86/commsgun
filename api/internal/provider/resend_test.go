@@ -124,9 +124,9 @@ func TestResendClassification(t *testing.T) {
 		{"503", 503, "", "", Retryable, model.ErrProviderUnavailable},
 		{"408", 408, "", "", Retryable, model.ErrProviderUnavailable},
 		{"409 concurrent", 409, "concurrent_idempotent_requests", "x", Retryable, model.ErrProviderUnavailable},
-		{"401", 401, "missing_api_key", "x", Permanent, model.ErrAuth},
-		{"403 key", 403, "restricted_api_key", "x", Permanent, model.ErrAuth},
-		{"403 invalid key", 403, "invalid_api_key", "x", Permanent, model.ErrAuth},
+		{"401", 401, "missing_api_key", "x", Throttled, model.ErrAuth},
+		{"403 key", 403, "restricted_api_key", "x", Throttled, model.ErrAuth},
+		{"403 invalid key", 403, "invalid_api_key", "x", Throttled, model.ErrAuth},
 		{"403 domain", 403, "validation_error", "The example.org domain is not verified.", Permanent, model.ErrSenderNotVerified},
 		{"403 other", 403, "forbidden", "x", Permanent, model.ErrUnknown},
 		{"422", 422, "validation_error", "bad subject", Permanent, model.ErrProviderRejected},
@@ -144,6 +144,19 @@ func TestResendClassification(t *testing.T) {
 				t.Fatalf("%+v", res)
 			}
 		})
+	}
+}
+
+func TestResendAuthFailurePausesProvider(t *testing.T) {
+	for _, c := range []struct {
+		status  int
+		errName string
+	}{{401, "missing_api_key"}, {403, "invalid_api_key"}, {403, "restricted_api_key"}} {
+		r, _ := serve(t, c.status, errBody(c.status, c.errName, "x"), map[string]string{"Retry-After": "1"})
+		res := r.Send(context.Background(), msg, Body{})
+		if res.Outcome != Throttled || res.PauseFor != constants.AuthPause || res.PauseReason != PauseAuth || res.PauseUntilUTCMidnight {
+			t.Fatalf("%d %s: %+v", c.status, c.errName, res)
+		}
 	}
 }
 

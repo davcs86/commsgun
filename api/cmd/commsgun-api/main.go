@@ -37,6 +37,8 @@ const (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	// Restoring default handling after the first signal lets a second one kill the process.
+	go func() { <-ctx.Done(); stop() }()
 	if err := run(ctx, os.Getenv, os.Stdout, listenEnqueue, listenAdmin); err != nil {
 		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("commsgun-api failed", "error", err.Error())
 		os.Exit(1)
@@ -129,7 +131,8 @@ func runWith(ctx context.Context, getenv func(string) string, stdout io.Writer, 
 	defer scancel()
 	for _, s := range []*http.Server{enqSrv, admSrv} {
 		if err := s.Shutdown(sctx); err != nil {
-			runErr = errors.Join(runErr, s.Close())
+			log.Warn("http shutdown timed out; closing open connections", "timeout_ms", constants.ShutdownTimeout.Milliseconds())
+			runErr = errors.Join(runErr, err, s.Close())
 		}
 	}
 	wg.Wait()
@@ -155,11 +158,11 @@ func listen(addr string, h http.Handler) (*http.Server, net.Listener, error) {
 	}, ln, nil
 }
 
-// buildProviders makes one instance per configured provider and shares it between worker and poller.
-func buildProviders(cfg *config.Config, wrap func(provider.Provider) provider.Provider) (map[model.Channel]provider.Provider, map[string]provider.StatusChecker, error) {
+// buildProviders makes one instance per configured channel and shares it between worker and poller.
+func buildProviders(cfg *config.Config, wrap func(provider.Provider) provider.Provider) (map[model.Channel]provider.Provider, map[worker.CheckerKey]provider.StatusChecker, error) {
 	hc := &http.Client{Timeout: constants.HTTPClientTimeout}
 	providers := map[model.Channel]provider.Provider{}
-	checkers := map[string]provider.StatusChecker{}
+	checkers := map[worker.CheckerKey]provider.StatusChecker{}
 	for ch, pc := range cfg.Providers {
 		var p provider.Provider
 		switch pc.Name {
@@ -175,7 +178,7 @@ func buildProviders(cfg *config.Config, wrap func(provider.Provider) provider.Pr
 		}
 		providers[ch] = p
 		if sc, ok := p.(provider.StatusChecker); ok {
-			checkers[pc.Name] = sc
+			checkers[worker.CheckerKey{Channel: ch, Provider: pc.Name}] = sc
 		}
 	}
 	return providers, checkers, nil

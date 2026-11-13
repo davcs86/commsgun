@@ -25,6 +25,21 @@ type ClaimedMessage struct {
 	Body provider.Body
 }
 
+const dueWhere = `((state=? AND hold_reason IS NULL AND next_attempt_at<=? AND (locked_until IS NULL OR locked_until<=?))
+	OR (state=? AND locked_until<=?)) AND channel=? AND provider=?`
+
+func dueArgs(nowMS int64, channel model.Channel, provider string) []any {
+	return []any{model.StateQueued, nowMS, nowMS, model.StateSending, nowMS, channel, provider}
+}
+
+// HasDue reports, from the read pool, whether ClaimDue would find work; it never writes.
+func (s *Store) HasDue(ctx context.Context, now time.Time, channel model.Channel, provider string) (bool, error) {
+	var due bool
+	err := s.r.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM messages WHERE `+dueWhere+`)`,
+		dueArgs(now.UTC().UnixMilli(), channel, provider)...).Scan(&due)
+	return due, translate(err)
+}
+
 // ClaimDue leases up to limit due messages of one channel and provider, oldest next_attempt_at first.
 func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int, channel model.Channel, provider string) (out []ClaimedMessage, err error) {
 	if limit <= 0 {
@@ -43,12 +58,8 @@ func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int, channel 
 	}()
 
 	rows, err := tx.QueryContext(ctx,
-		`SELECT id FROM messages
-		 WHERE ((state=? AND hold_reason IS NULL AND next_attempt_at<=? AND (locked_until IS NULL OR locked_until<=?))
-		        OR (state=? AND locked_until<=?))
-		   AND channel=? AND provider=?
-		 ORDER BY next_attempt_at, rowid LIMIT ?`,
-		model.StateQueued, nowMS, nowMS, model.StateSending, nowMS, channel, provider, limit)
+		`SELECT id FROM messages WHERE `+dueWhere+` ORDER BY next_attempt_at, rowid LIMIT ?`,
+		append(dueArgs(nowMS, channel, provider), limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -237,13 +248,23 @@ func (s *Store) Unclaim(ctx context.Context, now time.Time, id string) error {
 	return affectedOne(res, err)
 }
 
-// ExpireDue expires messages past their deadline that are queued or held by a dead lease.
+// SendDeadline is the instant from which a message may no longer be handed to a provider.
+func SendDeadline(createdAt, expiresAt time.Time) time.Time {
+	limit := createdAt.Add(constants.MaxSendWindow - constants.IdempotencySafetyMargin)
+	if expiresAt.Before(limit) {
+		return expiresAt
+	}
+	return limit
+}
+
+// ExpireDue expires messages past their send deadline that are queued or held by a dead lease.
 func (s *Store) ExpireDue(ctx context.Context, now time.Time) (int, error) {
 	nowMS := now.UTC().UnixMilli()
+	createdCutoff := now.UTC().Add(-(constants.MaxSendWindow - constants.IdempotencySafetyMargin)).UnixMilli()
 	res, err := s.w.ExecContext(ctx,
 		`UPDATE messages SET state=?, error_type=?, final_at=?, locked_until=NULL, updated_at=?, `+clearBodies+`
-		 WHERE expires_at<=? AND (state=? OR (state=? AND locked_until<=?))`,
-		model.StateExpired, model.ErrExpired, nowMS, nowMS, nowMS, model.StateQueued, model.StateSending, nowMS)
+		 WHERE (expires_at<=? OR created_at<=?) AND (state=? OR (state=? AND locked_until<=?))`,
+		model.StateExpired, model.ErrExpired, nowMS, nowMS, nowMS, createdCutoff, model.StateQueued, model.StateSending, nowMS)
 	if err != nil {
 		return 0, translate(err)
 	}

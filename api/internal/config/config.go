@@ -2,6 +2,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -230,14 +231,16 @@ func (c *Config) buildProviders(raw map[string]*rawProvider) error {
 	return nil
 }
 
-// Authenticate costs one constant-time comparison whether or not the app exists.
+// Authenticate costs one constant-time comparison of SHA-256 digests whether or not the app exists,
+// so neither the key's length nor the app's existence shows in the timing.
 func (c *Config) Authenticate(appID, bearer string) (*App, bool) {
 	app, known := c.Apps[appID]
 	want := unknownAppKey
 	if known {
 		want = []byte(app.Key)
 	}
-	match := subtle.ConstantTimeCompare([]byte(bearer), want) == 1
+	got, exp := sha256.Sum256([]byte(bearer)), sha256.Sum256(want)
+	match := subtle.ConstantTimeCompare(got[:], exp[:]) == 1
 	if !known || !match {
 		return nil, false
 	}

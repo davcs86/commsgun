@@ -23,6 +23,7 @@ const (
 	PauseRateLimit    = "rate_limit"
 	PauseDailyQuota   = "daily_quota"
 	PauseMonthlyQuota = "monthly_quota"
+	PauseAuth         = "auth"
 )
 
 type SendResult struct {
@@ -54,6 +55,7 @@ type Provider interface {
 	Send(ctx context.Context, m model.Message, body Body) SendResult
 }
 
+// StatusChecker errors are logged, so they must never carry an address, key or body.
 type StatusChecker interface {
 	Status(ctx context.Context, providerID string) (DeliveryStatus, error)
 }

@@ -56,6 +56,7 @@ type fakeStore struct {
 	res   store.EnqueueResult
 	err   error
 	look  *lookup
+	lerr  error
 	enter chan struct{} // when set, Enqueue signals here then waits for release
 	hold  chan struct{}
 }
@@ -80,6 +81,9 @@ type lookup struct {
 func (f *fakeStore) LookupRequest(context.Context, string, string) ([32]byte, store.EnqueueResult, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.lerr != nil {
+		return [32]byte{}, store.EnqueueResult{}, false, f.lerr
+	}
 	if f.look == nil {
 		return [32]byte{}, store.EnqueueResult{}, false, nil
 	}

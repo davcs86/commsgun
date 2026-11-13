@@ -49,6 +49,12 @@ const (
 	AdminMaxRange     = 31 * 24 * time.Hour
 	AdminFilterMaxLen = 200
 	AdminFacetCap     = 200
+
+	// IdempotencySafetyMargin keeps every send inside the provider's 24 h idempotency memory.
+	IdempotencySafetyMargin = 5 * time.Minute
+	AuthPause               = 10 * time.Minute
+	ReadPoolMax             = 4
+	ProviderErrorNameMaxLen = 64
 )
 
 // BucketStep maps a stats range up to MaxRange onto a series bucket; the last step has no bound.
