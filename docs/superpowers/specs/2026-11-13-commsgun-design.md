@@ -152,7 +152,7 @@ cannot expose the wrong surface:
 | Listener | Container port | Serves | Reachable from |
 |---|---|---|---|
 | Enqueue | 9200 | `POST /v1/messages`, `GET /healthz`, `GET /healthz/backlog` | Caddy (tailnet-only route), Gatus |
-| Admin | 9201 | `GET /admin/v1/*`, `GET /healthz` | the dashboard container only (compose network; never published to the host) |
+| Admin | 9201 | `GET /admin/v1/*`, `POST /admin/v1/probes`, `GET /healthz` | the dashboard container only (compose network; never published to the host) |
 
 SQLite through a pure-Go driver (`modernc.org/sqlite`), so the binary is static and the runtime
 image is distroless **(call)**. One process owns the database; the dashboard never opens it.

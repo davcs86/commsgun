@@ -85,5 +85,18 @@ docker build -t commsgun-api:dev api && docker build -t commsgun-ui:dev ui
 scripts/smoke.sh commsgun-api:dev commsgun-ui:dev   # runs both together on the fake provider
 ```
 
-Tests: `cd api && go test ./... -race`; `cd ui && pnpm install && pnpm check && pnpm lint && pnpm test && pnpm test:e2e`.
+Tests: `cd api && go vet ./... && go test ./... -race` (CI also runs `gofmt -l` and staticcheck; see `CLAUDE.md`);
+`cd ui && pnpm install && pnpm check && pnpm lint && pnpm test && pnpm test:e2e`.
 CI (`.github/workflows/ci.yml`) runs the same, then publishes both images on `main`.
+
+## Release
+
+Merging to `main` deploys nothing. CI builds both images, smoke-tests them together, pushes
+`ghcr.io/davcs86/commsgun-api` and `ghcr.io/davcs86/commsgun-ui` (`:<sha>`, plus the moving tag `main`) and prints
+both `@sha256:…` references in the `images` job summary. The edge keeps running the digests pinned in
+`davcs86/homelab-edge` until they are changed there.
+
+A change is live only after a second PR, in `davcs86/homelab-edge`: its `bump-commsgun` workflow opens it (daily, or
+at once from **Actions → bump-commsgun → Run workflow**), and after it merges the owner runs **Actions → deploy**
+there. Every merge to `main` publishes new digests, so a docs- or CI-only merge also produces a bump PR that changes
+nothing on the edge.
