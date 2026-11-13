@@ -60,6 +60,12 @@ The spec calls the app keys `commsgun_app_keys`; they are flat `commsgun_app_key
 4. **The enqueue name used for the dashboard's paths and vice versa** (`comms.ts…/login`, `commsgun.ts…/v1/messages`) → each name reaches only its own upstream. (Task 3)
 5. **One image published and the other not** (a CI run that failed between the two pushes) → the bump workflow proposes nothing and says why; it never pins a mismatched pair. (Task 5)
 
+## Added by the whole-branch review of the service (binding)
+
+- **No recipient address in a log.** The dashboard keeps its filters in the URL query (`/messages?recipient=a@example.com`, and `/login?next=…` carrying one), and the `*.ts` site imports `access_log tailnet`. The dashboard host's requests must be logged without their query string and without the `Referer` header. (Task 3)
+- **Own network.** `commsgun-api` and `commsgun-ui` share a compose network of their own (`commsgun`), not the stack's default one, so no other container can reach the admin port 9201 or spoof the dashboard's forwarded headers. Host-published ports are unchanged. (Task 2)
+- **Stop grace.** `commsgun-api` gets `stop_grace_period: 30s`: its own graceful shutdown allows 10 s, which equals Docker's default and would race it. (Task 2)
+
 ---
 
 ## PR 1 — declare the secrets
@@ -127,13 +133,15 @@ commsgun_apps:
 # compose: both services use the hardening anchor, read_only true; api ports == ["127.0.0.1:9200:9200"] (no 9201);
 #          ui ports == ["127.0.0.1:9202:9202"]; api volume "commsgun-data:/data"; mem_limit 96m / 192m;
 #          ui depends_on commsgun-api; images are the two pin variables
+#          both services are on network "commsgun" only (declared under top-level networks); no other service lists it
+#          commsgun-api has stop_grace_period 30s
 ```
 
 - [ ] **Step 2: Run** `python3 scripts/commsgun-config-test.py` → FAIL.
 - [ ] **Step 3: Implement.**
   - `versions.yml`: `commsgun_api_image: "ghcr.io/davcs86/commsgun-api@sha256:<digest>"` and the UI line, in exactly that quoted form (the bump script's regex requires it). Take both digests from the `images` job summary of the `commsgun` `main` run. Add two rows to `docs/versions.md` whose pin cells read `` `ghcr.io/davcs86/commsgun-api@sha256:xxxxxxxx…`, digest only (commit `xxxxxxx`, YYYY-MM-DD) `` — the format `scripts/bump_image_pin.py` rewrites.
   - `roles/stack/tasks/main.yml`: add `{{ edge_root }}/commsgun` (mode `0750`) to the directory loop; then, before the "Compose file" task, a block with `no_log: true` that (a) asserts `edge_secrets.resend_api_key` and `edge_secrets.commsgun_senders` are defined and non-empty, and that every app with an `email` channel has a `commsgun_senders` entry with a non-empty `senders` list containing its `default_sender`, each failing with `fail_msg` naming the key or app (never a value); (b) writes `api.env` (`COMMSGUN_CONFIG`, `RESEND_API_KEY`, `ADMIN_API_TOKEN`) and `ui.env` (`ADMIN_PASSWORD`, `SESSION_SECRET`, `ADMIN_API_TOKEN`, `API_BASE_URL`, `ORIGIN`), mode `0600`. Follow the existing "Webhooks-mcp secrets" task at lines 96–109.
-  - `compose.yml.j2`: the two services after `webhooks-mcp`, and `commsgun-data` under `volumes`.
+  - `compose.yml.j2`: the two services after `webhooks-mcp`, `commsgun-data` under `volumes`, and a top-level `networks: {commsgun: {}}` that only these two services join (`networks: [commsgun]`). `commsgun-api` gets `stop_grace_period: 30s`.
   - `roles/tailscale/tasks/main.yml:84`: append `commsgun_enqueue_hostname, commsgun_ui_hostname` to `_names` so both get split-horizon records.
 - [ ] **Step 4: Add the Review Focus cases to the test**: rendering with `commsgun_senders` lacking app `ops`, and with a `default_sender` absent from `senders`, makes the assertion expressions (import them from the task file with PyYAML and evaluate with Jinja2) evaluate false.
 - [ ] **Step 5: Run** `python3 scripts/commsgun-config-test.py && python3 scripts/secrets-keys-test.py && yamllint -s . && ansible-lint && for p in playbooks/*.yml; do ansible-playbook --syntax-check "$p"; done` → all pass.
@@ -163,6 +171,8 @@ handle @commsgun_ui {
 }
 ```
 
+The dashboard's requests must not be written to the access log with their query string or `Referer`. Read how `(access_log)` is defined in this Caddyfile and Caddy's log-filter documentation for the pinned version, then implement it the smallest way that works there (for example a `log_skip` on the dashboard matcher plus nothing else, or a `filter` encoder that deletes `request>uri`'s query and `request>headers>Referer` for that host). Prefer keeping a log line (method, path, status) over skipping it entirely.
+
 - [ ] **Step 1: Add the failing cases** to `scripts/caddy-routing-test.sh`, following its existing `expect` pattern and mock-upstream convention (add mock upstreams on 9200 and 9202 and the two hostnames to the `hosts.j2` line at line 28):
 
 ```
@@ -179,6 +189,8 @@ enqueue name on the staging port             404   (no upstream reached)
 dashboard name on the staging port           404   (no upstream reached)
 enqueue name reaches only the API            200 commsgun-api GET /login        (not commsgun-ui)
 dashboard name reaches only the UI           200 commsgun-ui POST /v1/messages  (not commsgun-api)
+dashboard query is not logged                after GET /messages?recipient=canary@example.test with a Referer carrying the same,
+                                             the access log contains no "canary@example.test"
 ```
 
 - [ ] **Step 2: Run** the script as CI does (build `edge-caddy:ci`, then `scripts/caddy-routing-test.sh edge-caddy:ci`) → the new cases FAIL.
@@ -258,8 +270,9 @@ The PR step runs when the guard says proceed and **either** image changed; its b
   3. Rotate an app key or the admin password.
   4. Change a limit.
   5. Configure an SMS provider (points at the `commsgun` repo; held messages older than 24 h will already have expired).
-  6. Read the dashboard: what "paused: daily quota" means and when it clears.
-- [ ] **Step 2: Add one "Known traps" entry to `docs/decisions.md`**: the enqueue route is authenticated but must stay tailnet-only; 9201 is never published and is guarded by a token because every stack container shares the compose network; `/data` must be the named volume (uid 10001, read-only root); the store is not backed up by decision; both pins move together and the bump workflow refuses a mismatched pair; the Resend key is full-access because bounce tracking reads email status.
+  6. Read the dashboard: what "paused: daily quota" means and when it clears; "Provider rejected the API key" (the hub pauses ten minutes at a time and keeps the queue until messages reach their deadline — fix the key in SOPS and deploy); "Sent" means accepted by the provider, "Delivered" is confirmed later.
+  7. Removing or renaming a provider: messages already queued for it stay queued, are not shown as held, and expire at their deadline.
+- [ ] **Step 2: Add one "Known traps" entry to `docs/decisions.md`**: the enqueue route is authenticated but must stay tailnet-only; 9201 is never published and is guarded by a token because every stack container shares the compose network; `/data` must be the named volume (uid 10001, read-only root); the store is not backed up by decision; both pins move together and the bump workflow refuses a mismatched pair; the Resend key is full-access because bounce tracking reads email status; the two containers sit on their own compose network; the dashboard host is logged without query strings because its filters carry recipient addresses.
 - [ ] **Step 3: Add the Context Guide row** to `CLAUDE.md`: "Deploy, configure or operate commsgun (email/SMS hub) | `docs/runbooks/commsgun.md`", and mention `bump-commsgun.yml` in the pin row.
 - [ ] **Step 4: Re-read every doc touched in this PR against the code** (the repo's Teardown rule) and fix any mismatch.
 - [ ] **Step 5: Run the whole CI set locally** — the commands of `.github/workflows/ci.yml`'s lint and caddy jobs — and report the output.
