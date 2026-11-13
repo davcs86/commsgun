@@ -1,4 +1,17 @@
-export type Channel = 'email' | 'sms';
+export const CHANNELS = ['email', 'sms'] as const;
+export type Channel = (typeof CHANNELS)[number];
+
+export const STATES = [
+	'queued',
+	'sending',
+	'sent',
+	'delivered',
+	'bounced',
+	'complained',
+	'failed',
+	'expired'
+] as const;
+export type State = (typeof STATES)[number];
 
 export type Totals = {
 	enqueued: number;

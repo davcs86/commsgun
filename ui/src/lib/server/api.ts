@@ -7,6 +7,8 @@ export type ApiResult<T> =
 	| { ok: true; data: T }
 	| { ok: false; status: number; reason: 'unavailable' | 'error' | 'not_found' };
 
+const MESSAGE_ID = /^[A-Za-z0-9-]{1,64}$/;
+
 export function createApi(env: Env, fetchFn: typeof fetch) {
 	const base = env.apiBaseUrl.replace(/\/+$/, '');
 
@@ -26,8 +28,14 @@ export function createApi(env: Env, fetchFn: typeof fetch) {
 		if (!res.ok) return { ok: false, status: res.status, reason: 'error' };
 		try {
 			return { ok: true, data: (await res.json()) as T };
-		} catch {
-			return { ok: false, status: res.status, reason: 'error' };
+		} catch (e) {
+			const name = e instanceof Error ? e.name : '';
+			const aborted = name === 'AbortError' || name === 'TimeoutError';
+			return {
+				ok: false,
+				status: aborted ? 0 : res.status,
+				reason: aborted ? 'unavailable' : 'error'
+			};
 		}
 	}
 
@@ -38,7 +46,11 @@ export function createApi(env: Env, fetchFn: typeof fetch) {
 			if (cursor) params.set('cursor', cursor);
 			return call<MessagePage>('messages', params);
 		},
-		message: (id: string) => call<MessageDetail>(`messages/${encodeURIComponent(id)}`),
+		message(id: string): Promise<ApiResult<MessageDetail>> {
+			if (!MESSAGE_ID.test(id))
+				return Promise.resolve({ ok: false, status: 404, reason: 'not_found' });
+			return call<MessageDetail>(`messages/${id}`);
+		},
 		facets: () => call<Facets>('facets'),
 		overview: () => call<Overview>('overview')
 	};

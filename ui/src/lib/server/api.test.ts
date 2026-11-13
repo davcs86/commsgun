@@ -78,14 +78,64 @@ describe('createApi', () => {
 		expect(await api.overview()).toEqual({ ok: false, status: 200, reason: 'error' });
 	});
 
-	it('returns parsed data and encodes the message id', async () => {
+	it('requests /admin/v1/messages/<uuid> for a valid id', async () => {
+		const id = '3f2b8c1e-5d4a-4e6f-9a1b-0c2d3e4f5a6b';
 		const fetchFn = vi.fn<(u: string, i?: RequestInit) => Promise<Response>>(async () =>
-			json({ message: { id: 'a/b' }, attempts: [] })
+			json({ message: { id }, attempts: [] })
 		);
-		const r = await createApi(env, fetchFn as unknown as typeof fetch).message('a/b');
-		expect(r).toEqual({ ok: true, data: { message: { id: 'a/b' }, attempts: [] } });
-		expect(String(fetchFn.mock.calls[0][0])).toContain('/admin/v1/messages/a%2Fb');
+		const r = await createApi(env, fetchFn as unknown as typeof fetch).message(id);
+		expect(r).toEqual({ ok: true, data: { message: { id }, attempts: [] } });
+		expect(String(fetchFn.mock.calls[0][0])).toBe(`http://api:9201/admin/v1/messages/${id}`);
 	});
+
+	it.each(['..', '.', '', 'a/b', 'a'.repeat(65)])(
+		'message(%j) is not_found without a request',
+		async (id) => {
+			const fetchFn = vi.fn();
+			const r = await createApi(env, fetchFn as unknown as typeof fetch).message(id);
+			expect(r).toEqual({ ok: false, status: 404, reason: 'not_found' });
+			expect(fetchFn).not.toHaveBeenCalled();
+		}
+	);
+
+	it('aborts after exactly 5s: still pending at 4999 ms, unavailable at 5000 ms', async () => {
+		vi.useFakeTimers();
+		try {
+			vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+				const c = new AbortController();
+				setTimeout(() => c.abort(new DOMException('timed out', 'TimeoutError')), ms);
+				return c.signal;
+			});
+			const hang = ((_u: string, init?: RequestInit) =>
+				new Promise((_resolve, reject) => {
+					init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+				})) as unknown as typeof fetch;
+			let settled: unknown;
+			const p = createApi(env, hang)
+				.overview()
+				.then((r) => (settled = r));
+			await vi.advanceTimersByTimeAsync(4999);
+			expect(settled).toBeUndefined();
+			await vi.advanceTimersByTimeAsync(1);
+			await p;
+			expect(settled).toEqual({ ok: false, status: 0, reason: 'unavailable' });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each(['AbortError', 'TimeoutError'])(
+		'a body read failing with %s is unavailable',
+		async (name) => {
+			const res = {
+				ok: true,
+				status: 200,
+				json: async () => Promise.reject(new DOMException('x', name))
+			};
+			const api = createApi(env, (async () => res) as unknown as typeof fetch);
+			expect(await api.overview()).toEqual({ ok: false, status: 0, reason: 'unavailable' });
+		}
+	);
 
 	it('never includes the token in a thrown or returned message', async () => {
 		const leaky = createApi(env, (async () => {

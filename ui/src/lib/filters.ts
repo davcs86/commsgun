@@ -1,21 +1,14 @@
 import { MAX_CUSTOM_RANGE_MS, RANGE_SECONDS, TEXT_FILTER_MAX } from './constants.js';
-import type { Channel } from './types.js';
+import { CHANNELS, STATES, type Channel, type State } from './types.js';
 
 export const RANGES = ['1h', '3h', '6h', '12h', '24h', '3d', '7d', '14d', '30d'] as const;
 export type RangeKey = (typeof RANGES)[number];
+const MIN_YEAR = 1970;
+const MAX_YEAR = 9999;
+
 export const DEFAULT_RANGE: RangeKey = '1h';
 
-const CHANNELS: readonly Channel[] = ['email', 'sms'];
-const STATES = [
-	'queued',
-	'sending',
-	'sent',
-	'delivered',
-	'bounced',
-	'complained',
-	'failed',
-	'expired'
-] as const;
+export { CHANNELS, STATES };
 
 export type Filters = {
 	range: RangeKey | 'custom';
@@ -23,7 +16,7 @@ export type Filters = {
 	to: Date;
 	channel?: Channel;
 	app?: string;
-	state?: string;
+	state?: State;
 	errorType?: string;
 	sender?: string;
 	recipient?: string;
@@ -44,7 +37,9 @@ function text(value: string | null): string | undefined {
 function instant(value: string | null): Date | undefined {
 	if (!value) return undefined;
 	const d = new Date(value);
-	return Number.isNaN(d.getTime()) ? undefined : d;
+	if (Number.isNaN(d.getTime())) return undefined;
+	const year = d.getUTCFullYear();
+	return year < MIN_YEAR || year > MAX_YEAR ? undefined : d;
 }
 
 function quick(range: RangeKey, now: Date): Pick<Filters, 'range' | 'from' | 'to'> {
@@ -66,7 +61,7 @@ export function parseFilters(url: URLSearchParams, now: Date): Filters {
 	const channel = url.get('channel');
 	if (channel && (CHANNELS as readonly string[]).includes(channel)) f.channel = channel as Channel;
 	const state = url.get('state');
-	if (state && (STATES as readonly string[]).includes(state)) f.state = state;
+	if (state && (STATES as readonly string[]).includes(state)) f.state = state as State;
 	for (const [key, param] of TEXT_FIELDS) {
 		const v = text(url.get(param));
 		if (v !== undefined) f[key] = v;

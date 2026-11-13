@@ -69,6 +69,17 @@ describe('parseFilters', () => {
 		expect(f.to.getTime()).toBe(now.getTime());
 	});
 
+	it('treats years outside 1970..9999 as invalid', () => {
+		for (const qs of [
+			'from=2026-11-12T00:00:00Z&to=275760-09-13T00:00:00Z',
+			'from=1969-12-31T00:00:00Z&to=2026-11-12T00:00:00Z'
+		]) {
+			const f = parse(qs);
+			expect(f.range).toBe('1h');
+			expect(f.to.getTime()).toBe(now.getTime());
+		}
+	});
+
 	it('parses a valid custom range', () => {
 		const f = parse('from=2026-11-12T00:00:00Z&to=2026-11-12T06:00:00Z');
 		expect(f.range).toBe('custom');
