@@ -354,7 +354,8 @@ func enqueuedBreakdown(ctx context.Context, qr querier, f Filter) ([]AppCount, [
 }
 
 const adminMessageCols = `m.id, m.request_id, m.app, m.channel, m.recipient, m.sender, m.state, m.hold_reason, m.attempts,
-	m.error_type, m.provider, m.provider_message_id, m.body_bytes, m.created_at, m.sent_at, m.final_at, m.expires_at, m.next_attempt_at`
+	m.error_type, m.provider, m.provider_message_id, m.body_bytes, m.created_at, m.sent_at, m.final_at, m.expires_at, m.next_attempt_at,
+	m.source_ip`
 
 func scanMessage(row rowScanner) (model.Message, error) {
 	var m model.Message
@@ -362,7 +363,7 @@ func scanMessage(row rowScanner) (model.Message, error) {
 	var created, expires int64
 	var sent, final, next sql.NullInt64
 	if err := row.Scan(&m.ID, &m.RequestID, &m.App, &m.Channel, &m.Recipient, &m.Sender, &m.State, &hold, &m.Attempts,
-		&errType, &prov, &provID, &m.BodyBytes, &created, &sent, &final, &expires, &next); err != nil {
+		&errType, &prov, &provID, &m.BodyBytes, &created, &sent, &final, &expires, &next, &m.SourceIP); err != nil {
 		return m, err
 	}
 	m.HoldReason = strPtr(hold)

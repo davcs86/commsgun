@@ -139,7 +139,7 @@ func seed(t *testing.T, st *store.Store) {
 	in := store.EnqueueInput{
 		App: "app1", Channel: model.ChannelEmail, IdempotencyKey: "k", BodyHash: sha256.Sum256([]byte("b")),
 		Recipients: []string{"a@x.com"}, Sender: "s@x.com", Subject: "SECRET-SUBJECT", Text: "SECRET-BODY",
-		ExpiresAt: now.Add(time.Hour), PerMinute: 10, PerDay: 10, Provider: "resend",
+		ExpiresAt: now.Add(time.Hour), PerMinute: 10, PerDay: 10, Provider: "resend", SourceIP: "192.0.2.9",
 	}
 	if _, err := st.Enqueue(context.Background(), now.Add(-time.Minute), in); err != nil {
 		t.Fatal(err)
@@ -183,9 +183,12 @@ func TestAdminEndpointsShape(t *testing.T) {
 		t.Fatalf("list %v", list)
 	}
 	id := items[0].(map[string]any)["id"].(string)
+	if ip := items[0].(map[string]any)["source_ip"]; ip != "192.0.2.9" {
+		t.Fatalf("list source_ip = %v", ip)
+	}
 
 	one := get("/admin/v1/messages/" + id)
-	if one["message"].(map[string]any)["id"] != id || len(one["attempts"].([]any)) != 0 {
+	if m := one["message"].(map[string]any); m["id"] != id || m["source_ip"] != "192.0.2.9" || len(one["attempts"].([]any)) != 0 {
 		t.Fatalf("detail %v", one)
 	}
 	if rec := do(h, http.MethodGet, "/admin/v1/messages/unknown", "Bearer "+token); rec.Code != 404 || !strings.Contains(rec.Body.String(), `"error"`) {

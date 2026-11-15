@@ -265,7 +265,8 @@ function messageFixtures(scenario: Scenario, now: number) {
 			sent_at: attemptCount > 0 && !failed ? new Date(created + 2000).toISOString() : null,
 			final_at: state === 'delivered' || failed ? new Date(created + 9000).toISOString() : null,
 			expires_at: new Date(created + DAY).toISOString(),
-			next_attempt_at: state === 'queued' ? new Date(now + MINUTE).toISOString() : null
+			next_attempt_at: state === 'queued' ? new Date(now + MINUTE).toISOString() : null,
+			source_ip: '192.0.2.10'
 		};
 		const attempts = Array.from({ length: attemptCount }, (_, n) => {
 			const ok = n === attemptCount - 1 && !failed;
