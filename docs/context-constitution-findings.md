@@ -11,7 +11,6 @@ every open row and retires the rows that no longer reproduce to `## Resolved`.
 |---|---|---|---|
 | `CLAUDE.md` Rule 4: "logs carry message ids only" | The enqueue log also carries `app`, `channel`, the recipient count, `request_id`, `status` and `duration_ms`; the poller logs the provider `err.Error()` text | `api/internal/enqueue/handler.go#logInfo` ("h.log.Info(\"enqueue\""), `api/internal/worker/poller.go#poll` ("status poll failed") | Reword Rule 4 to its intent (no secret, body, subject or address; ids and enumerated request facts only), and check whether provider error text can carry an address |
 | `docs/superpowers/plans/2026-11-13-commsgun-api.md#Tech Stack`: "go directive `1.24`" | `api/go.mod` declares `go 1.27` (`toolchain go1.27.4`) | `api/go.mod` | Historical plan; annotate or leave (owner) |
-| `README.md` (Run locally): `cd ui && pnpm install && …` | `CLAUDE.md`, the Dockerfile and CI use `pnpm install --frozen-lockfile` | `README.md` ("pnpm install && pnpm check"), `.github/workflows/ci.yml` | Add `--frozen-lockfile` |
 
 ## Latent bugs (looks broken, not merely non-obvious)
 
@@ -33,7 +32,9 @@ _None._
 
 ## Resolved
 
-_None._
+| What the docs say / issue | Evidence (was) | Resolved | How confirmed |
+|---|---|---|---|
+| `README.md` (Run locally) used `pnpm install` without `--frozen-lockfile` | `README.md`, `.github/workflows/ci.yml` | 2026-11-15 | README now says `pnpm install --frozen-lockfile`, matching `CLAUDE.md`, the Dockerfile and CI |
 
 ---
 _Surfaced by [context-forge](https://github.com/davcs86/agent-plugins). Open items above are defects to
