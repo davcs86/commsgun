@@ -9,7 +9,8 @@ export const TEST_SESSION_SECRET = 'fake-session-secret-000000000000000';
 
 export const SCENARIOS = ['normal', 'empty', 'down', 'hostile', 'mixed', 'auth'] as const;
 export type Scenario = (typeof SCENARIOS)[number];
-export const ENDPOINTS = ['stats', 'overview', 'facets', 'messages'] as const;
+// `message` is the detail route `messages/<id>`; `probes` covers both GET and POST.
+export const ENDPOINTS = ['stats', 'overview', 'facets', 'messages', 'message', 'probes'] as const;
 export type Endpoint = (typeof ENDPOINTS)[number];
 
 export const HOSTILE_RECIPIENT = '<script>alert(1)</script>@x.io';
@@ -395,10 +396,14 @@ async function readBody(req: IncomingMessage): Promise<string> {
 	return data;
 }
 
+function failKey(route: string): string {
+	return route.startsWith('messages/') ? 'message' : route;
+}
+
 function handleAdmin(state: State, req: IncomingMessage, res: ServerResponse, url: URL) {
 	state.requests.push(url.pathname + url.search);
 	const route = url.pathname.slice('/admin/v1/'.length);
-	if (state.scenario === 'down' || state.fail.includes(route.split('/')[0])) {
+	if (state.scenario === 'down' || state.fail.includes(failKey(route))) {
 		req.socket.destroy();
 		return;
 	}
@@ -435,7 +440,9 @@ export function startStub(port = STUB_PORT) {
 		}
 		if (req.method === 'POST' && url.pathname === '/admin/v1/probes') {
 			state.requests.push(url.pathname);
-			if (state.scenario === 'down') return void req.socket.destroy();
+			if (state.scenario === 'down' || state.fail.includes('probes')) {
+				return void req.socket.destroy();
+			}
 			if (req.headers.authorization !== `Bearer ${STUB_TOKEN}`) return send(res, 401);
 			return handleProbe(state, req, res);
 		}
