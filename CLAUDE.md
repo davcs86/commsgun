@@ -61,7 +61,8 @@ calls the admin API server-side; read-only except the hello-world probe (`POST /
    `docs/superpowers/plans/` are that contract; never change one here alone.
 2. **API limits, caps and durations live only in `api/internal/constants/constants.go`.**
 3. The enqueue port (9200) is tailnet-only; the admin port (9201) is never published to the host.
-4. No secret, message body, subject or address in a log or an error string; logs carry message ids only.
+4. No secret, message body, subject or address in a log or an error string. Logs carry ids (message, request)
+   and enumerated facts (app, channel, counts, status, outcome, durations); provider text only once sanitised.
 5. Secrets (`ADMIN_PASSWORD`, `SESSION_SECRET`, `ADMIN_API_TOKEN`, app keys) are read only in server-only
    code, compared in constant time, and never appear in a fixture.
 6. Keep base-image digest and `ci.yml` action SHA pins; bump them deliberately.
