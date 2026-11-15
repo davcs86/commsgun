@@ -234,6 +234,18 @@ test('a provider paused for a rejected API key says so', async ({ page }) => {
 	await expect(email.getByText(/^resumes/)).toBeVisible();
 });
 
+test('a provider at its own daily limit shows the local limit, not a quota', async ({ page }) => {
+	await setScenario('window');
+	await page.goto('/');
+	const email = page
+		.getByRole('region', { name: 'Provider usage' })
+		.getByRole('listitem')
+		.filter({ hasText: 'resend' });
+	await expect(email).toContainText('Daily limit reached');
+	await expect(email).not.toContainText('window_day');
+	await expect(email.getByText(/^resumes/)).toBeVisible();
+});
+
 test('stub stats never count more outcomes than sends, per bucket and in total', async () => {
 	for (const scenario of SCENARIOS.filter((s) => s !== 'down')) {
 		await setScenario(scenario);

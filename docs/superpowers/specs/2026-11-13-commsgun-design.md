@@ -298,7 +298,8 @@ failed`.
 
 Each configured provider has `per_minute` and `per_day` limits **(owner)**, enforced by the worker
 before every send: durable fixed-window counters, the day being the UTC day (matches Resend's reset).
-At the limit the provider is paused until the window turns over. Independently, a 429 from Resend
+At the limit the provider is paused until the window turns over (a `provider_pauses` row with reason
+`window_minute` or `window_day`; a released reservation or a restart clears it). Independently, a 429 from Resend
 pauses the provider for `retry-after` (`rate_limit_exceeded`), until the next UTC midnight
 (`daily_quota_exceeded`), or for 6 hours and re-probe (`monthly_quota_exceeded`) **(call)**. Status
 polls are spaced to stay far under the 10 requests/second team limit.

@@ -354,7 +354,8 @@ func enqueuedBreakdown(ctx context.Context, qr querier, f Filter) ([]AppCount, [
 }
 
 const adminMessageCols = `m.id, m.request_id, m.app, m.channel, m.recipient, m.sender, m.state, m.hold_reason, m.attempts,
-	m.error_type, m.provider, m.provider_message_id, m.body_bytes, m.created_at, m.sent_at, m.final_at, m.expires_at, m.next_attempt_at`
+	m.error_type, m.provider, m.provider_message_id, m.body_bytes, m.created_at, m.sent_at, m.final_at, m.expires_at, m.next_attempt_at,
+	m.source_ip`
 
 func scanMessage(row rowScanner) (model.Message, error) {
 	var m model.Message
@@ -362,7 +363,7 @@ func scanMessage(row rowScanner) (model.Message, error) {
 	var created, expires int64
 	var sent, final, next sql.NullInt64
 	if err := row.Scan(&m.ID, &m.RequestID, &m.App, &m.Channel, &m.Recipient, &m.Sender, &m.State, &hold, &m.Attempts,
-		&errType, &prov, &provID, &m.BodyBytes, &created, &sent, &final, &expires, &next); err != nil {
+		&errType, &prov, &provID, &m.BodyBytes, &created, &sent, &final, &expires, &next, &m.SourceIP); err != nil {
 		return m, err
 	}
 	m.HoldReason = strPtr(hold)
@@ -555,8 +556,13 @@ type Overview struct {
 func (s *Store) Overview(ctx context.Context, now time.Time, cfg *config.Config) (Overview, error) {
 	now = now.UTC()
 	ov := Overview{Providers: []ProviderStatus{}}
+	tx, err := s.r.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ov, translate(err)
+	}
+	defer tx.Rollback()
 	var oldest sql.NullInt64
-	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*), MIN(CASE WHEN hold_reason IS NULL THEN created_at END) FROM messages WHERE state IN (?,?)`,
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), MIN(CASE WHEN hold_reason IS NULL THEN created_at END) FROM messages WHERE state IN (?,?)`,
 		string(model.StateQueued), string(model.StateSending)).Scan(&ov.QueueDepth, &oldest); err != nil {
 		return ov, translate(err)
 	}
@@ -573,7 +579,7 @@ func (s *Store) Overview(ctx context.Context, now time.Time, cfg *config.Config)
 		for _, w := range windowsAt(now, perMinute, perDay) {
 			used := 0
 			if ps.Name != nil {
-				err := s.r.QueryRowContext(ctx, `SELECT count FROM rate_counters WHERE scope=? AND window_kind=? AND window_start=?`,
+				err := tx.QueryRowContext(ctx, `SELECT count FROM rate_counters WHERE scope=? AND window_kind=? AND window_start=?`,
 					providerScope(ch, name), w.kind, w.start.UnixMilli()).Scan(&used)
 				if err != nil && !errors.Is(err, sql.ErrNoRows) {
 					return ov, translate(err)
@@ -588,7 +594,7 @@ func (s *Store) Overview(ctx context.Context, now time.Time, cfg *config.Config)
 		if ps.Name != nil {
 			var until int64
 			var reason string
-			err := s.r.QueryRowContext(ctx, `SELECT until, reason FROM provider_pauses WHERE provider=? AND until>?`,
+			err := tx.QueryRowContext(ctx, `SELECT until, reason FROM provider_pauses WHERE provider=? AND until>?`,
 				providerScope(ch, name), now.UnixMilli()).Scan(&until, &reason)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return ov, translate(err)
@@ -598,7 +604,7 @@ func (s *Store) Overview(ctx context.Context, now time.Time, cfg *config.Config)
 				ps.PausedUntil, ps.PauseReason = &t, &reason
 			}
 		}
-		if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE state=? AND channel=? AND hold_reason IS NOT NULL`,
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE state=? AND channel=? AND hold_reason IS NOT NULL`,
 			string(model.StateQueued), string(ch)).Scan(&ps.Held); err != nil {
 			return ov, translate(err)
 		}

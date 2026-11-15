@@ -58,6 +58,7 @@ export type Message = {
 	final_at: string | null;
 	expires_at: string;
 	next_attempt_at: string | null;
+	source_ip: string;
 };
 
 export type Attempt = {

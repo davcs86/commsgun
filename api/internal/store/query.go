@@ -24,10 +24,15 @@ func (s *Store) Ping(ctx context.Context) error {
 func (s *Store) Backlog(ctx context.Context, now time.Time, providers map[model.Channel]*config.ProviderCfg) (oldest time.Time, ok bool, err error) {
 	now = now.UTC()
 	nowMS := now.UnixMilli()
+	tx, err := s.r.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return time.Time{}, false, translate(err)
+	}
+	defer tx.Rollback()
 	for ch, p := range providers {
 		scope := providerScope(ch, p.Name)
 		var paused int
-		if err = s.r.QueryRowContext(ctx,
+		if err = tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM provider_pauses WHERE provider=? AND until>?`, scope, nowMS).Scan(&paused); err != nil {
 			return time.Time{}, false, translate(err)
 		}
@@ -37,7 +42,7 @@ func (s *Store) Backlog(ctx context.Context, now time.Time, providers map[model.
 		full := false
 		for _, w := range windowsAt(now, p.PerMinute, p.PerDay) {
 			var used int
-			err = s.r.QueryRowContext(ctx,
+			err = tx.QueryRowContext(ctx,
 				`SELECT count FROM rate_counters WHERE scope=? AND window_kind=? AND window_start=?`,
 				scope, w.kind, w.start.UnixMilli()).Scan(&used)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -51,7 +56,7 @@ func (s *Store) Backlog(ctx context.Context, now time.Time, providers map[model.
 			continue
 		}
 		var due sql.NullInt64
-		if err = s.r.QueryRowContext(ctx,
+		if err = tx.QueryRowContext(ctx,
 			`SELECT MIN(next_attempt_at) FROM messages
 			 WHERE state=? AND hold_reason IS NULL AND next_attempt_at<=? AND channel=? AND provider=?`,
 			model.StateQueued, nowMS, ch, p.Name).Scan(&due); err != nil {

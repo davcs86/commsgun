@@ -51,9 +51,9 @@ func SubmitNamespaced(ctx context.Context, cfg *config.Config, st Enqueuer, now 
 	var out Outcome
 	switch {
 	case key == "":
-		return out, unprocessable(errKeyRequired, headerKey)
+		return out, unprocessable(errKeyRequired, HeaderIdempotencyKey)
 	case len(key) > constants.IdempotencyKeyMaxLen || !keyPattern.MatchString(key):
-		return out, unprocessable(errInvalidKey, headerKey)
+		return out, unprocessable(errInvalidKey, HeaderIdempotencyKey)
 	}
 	if namespace != "" {
 		key = namespace + namespaceSep + key
@@ -137,9 +137,9 @@ func WriteFailure(w http.ResponseWriter, f *Failure) {
 		body["field"] = f.Field
 	case http.StatusTooManyRequests:
 		body["window"] = f.Window
-		w.Header().Set("Retry-After", retryAfterSeconds(f.RetryAfter))
+		w.Header().Set("Retry-After", RetryAfterSeconds(f.RetryAfter))
 	case http.StatusServiceUnavailable:
-		w.Header().Set("Retry-After", retryAfterSeconds(f.RetryAfter))
+		w.Header().Set("Retry-After", RetryAfterSeconds(f.RetryAfter))
 	}
 	writeJSON(w, f.Status, body)
 }

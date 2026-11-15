@@ -28,6 +28,7 @@
 			{ label: 'App', text: m.app },
 			{ label: 'Recipient', text: m.recipient },
 			{ label: 'Sender', text: m.sender },
+			{ label: 'Source IP', text: m.source_ip || '—' },
 			{
 				label: 'Provider',
 				text: m.provider

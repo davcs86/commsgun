@@ -234,6 +234,23 @@ func TestResendMessageRedactsAddressesAndTruncates(t *testing.T) {
 	}
 }
 
+func TestResendSendSanitisesProviderErrorName(t *testing.T) {
+	cases := map[string]string{
+		"validation_error":          "validation_error",
+		"bob@example.com":           "",
+		"<script>alert(1)</script>": "",
+		"Has Spaces":                "",
+		strings.Repeat("a", constants.ProviderErrorNameMaxLen):   strings.Repeat("a", constants.ProviderErrorNameMaxLen),
+		strings.Repeat("a", constants.ProviderErrorNameMaxLen+1): "",
+	}
+	for name, want := range cases {
+		r, _ := serve(t, 422, errBody(422, name, "x"), nil)
+		if got := r.Send(context.Background(), msg, Body{}).ProviderError; got != want {
+			t.Fatalf("name %q: stored %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestResendResponseBodyIsCapped(t *testing.T) {
 	big := `{"id":"` + strings.Repeat("a", constants.ProviderResponseMaxBytes) + `"}`
 	r, _ := serve(t, 200, big, nil)

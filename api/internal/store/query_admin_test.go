@@ -442,6 +442,31 @@ func newStoreFacets(t *testing.T) ([]byte, error) {
 	return json.Marshal(f)
 }
 
+func TestOverviewShowsWindowPause(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	cfg := &config.Config{Providers: map[model.Channel]*config.ProviderCfg{
+		model.ChannelEmail: {Name: "resend", PerMinute: 1, PerDay: 100},
+	}}
+	for i, want := range []bool{true, false} {
+		if ok, _, _, err := s.ProviderReserve(ctx, t0, model.ChannelEmail, "resend", 1, 100); err != nil || ok != want {
+			t.Fatalf("reserve %d: ok=%v err=%v", i, ok, err)
+		}
+	}
+	ov, err := s.Overview(ctx, t0, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := ov.Providers[0]
+	reset := t0.Truncate(time.Minute).Add(time.Minute)
+	if e.PausedUntil == nil || !e.PausedUntil.Equal(reset) || e.PauseReason == nil || *e.PauseReason != "window_minute" {
+		t.Fatalf("email %+v", e)
+	}
+	if ov, err = s.Overview(ctx, reset, cfg); err != nil || ov.Providers[0].PausedUntil != nil {
+		t.Fatalf("after reset: %+v %v", ov.Providers[0], err)
+	}
+}
+
 func TestOverview(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

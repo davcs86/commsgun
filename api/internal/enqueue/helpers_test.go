@@ -128,7 +128,7 @@ func newReq(body string, opts ...reqOpt) *http.Request {
 	r.RemoteAddr = "192.0.2.9:4000"
 	r.Header.Set(headerApp, testApp)
 	r.Header.Set("Authorization", "Bearer "+testKey)
-	r.Header.Set(headerKey, "key-1")
+	r.Header.Set(HeaderIdempotencyKey, "key-1")
 	r.Header.Set("Content-Type", "application/json")
 	for _, o := range opts {
 		o(r)

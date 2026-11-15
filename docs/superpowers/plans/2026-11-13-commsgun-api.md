@@ -79,7 +79,8 @@ GET /admin/v1/overview
 
 Message = {"id","request_id","app","channel","recipient","sender","state","hold_reason","attempts",
            "error_type","provider","provider_message_id","body_bytes",
-           "created_at","sent_at","final_at","expires_at","next_attempt_at"}
+           "created_at","sent_at","final_at","expires_at","next_attempt_at","source_ip"}
+           # source_ip: amended 2026-11-15 (owner), the stored K6 address, in list and detail
 Attempt = {"n","started_at","duration_ms","outcome","error_type","provider_status","provider_error","message"}
 ```
 

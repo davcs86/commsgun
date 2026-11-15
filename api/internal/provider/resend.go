@@ -105,7 +105,7 @@ func (r *Resend) Send(ctx context.Context, m model.Message, body Body) SendResul
 	_ = json.Unmarshal(raw, &ae)
 	res := classify(resp.StatusCode, ae)
 	res.Status = resp.StatusCode
-	res.ProviderError = ae.Name
+	res.ProviderError = safeErrorName(ae.Name)
 	res.Message = safeMessage(ae.Message)
 	if res.Outcome == Throttled && res.PauseReason == PauseRateLimit {
 		res.PauseFor = parseRetryAfter(resp.Header.Get("Retry-After"))
@@ -202,10 +202,10 @@ func (r *Resend) Status(ctx context.Context, providerID string) (DeliveryStatus,
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var ae apiError
 		_ = json.Unmarshal(raw, &ae)
-		if !errorNamePattern.MatchString(ae.Name) || len(ae.Name) > constants.ProviderErrorNameMaxLen {
-			return Pending, fmt.Errorf("status http %d", resp.StatusCode)
+		if name := safeErrorName(ae.Name); name != "" {
+			return Pending, fmt.Errorf("status http %d %s", resp.StatusCode, name)
 		}
-		return Pending, fmt.Errorf("status http %d %s", resp.StatusCode, ae.Name)
+		return Pending, fmt.Errorf("status http %d", resp.StatusCode)
 	}
 	var out struct {
 		LastEvent string `json:"last_event"`
@@ -214,6 +214,14 @@ func (r *Resend) Status(ctx context.Context, providerID string) (DeliveryStatus,
 		return Pending, errors.New("status response not json")
 	}
 	return mapLastEvent(out.LastEvent), nil
+}
+
+// safeErrorName returns name only if it is a short identifier, else "".
+func safeErrorName(name string) string {
+	if len(name) > constants.ProviderErrorNameMaxLen || !errorNamePattern.MatchString(name) {
+		return ""
+	}
+	return name
 }
 
 func mapLastEvent(ev string) DeliveryStatus {

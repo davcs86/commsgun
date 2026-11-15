@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -93,25 +95,25 @@ func TestAdminRejectsNonGET(t *testing.T) {
 func TestAdminBadParams(t *testing.T) {
 	h, _ := setup(t)
 	long := strings.Repeat("a", 201)
-	cases := []struct{ q, field string }{
-		{"from=2026-11-13T12:00:00Z&to=2026-11-13T11:00:00Z", "from"},
-		{"from=2026-11-13T12:00:00Z&to=2026-11-13T12:00:00Z", "from"},
-		{"from=yesterday", "from"},
-		{"to=nope", "to"},
-		{"from=2026-10-01T00:00:00Z&to=2026-11-13T00:00:00Z", "from"},
-		{"channel=fax", "channel"},
-		{"state=lost", "state"},
-		{"recipient=" + long, "recipient"},
-		{"sender=" + long, "sender"},
-		{"app=" + long, "app"},
-		{"error_type=" + long, "error_type"},
+	cases := []struct{ q, code, field string }{
+		{"from=2026-11-13T12:00:00Z&to=2026-11-13T11:00:00Z", "invalid_range", "from"},
+		{"from=2026-11-13T12:00:00Z&to=2026-11-13T12:00:00Z", "invalid_range", "from"},
+		{"from=yesterday", "invalid_instant", "from"},
+		{"to=nope", "invalid_instant", "to"},
+		{"from=2026-10-01T00:00:00Z&to=2026-11-13T00:00:00Z", "range_too_long", "from"},
+		{"channel=fax", "invalid_channel", "channel"},
+		{"state=lost", "invalid_state", "state"},
+		{"recipient=" + long, "filter_too_long", "recipient"},
+		{"sender=" + long, "filter_too_long", "sender"},
+		{"app=" + long, "filter_too_long", "app"},
+		{"error_type=" + long, "filter_too_long", "error_type"},
 	}
 	for _, p := range []string{"/admin/v1/stats", "/admin/v1/messages"} {
 		for _, c := range cases {
 			rec := do(h, http.MethodGet, p+"?"+c.q, "Bearer "+token)
 			var body map[string]string
 			_ = json.Unmarshal(rec.Body.Bytes(), &body)
-			if rec.Code != 400 || body["field"] != c.field || body["error"] == "" {
+			if rec.Code != 400 || body["field"] != c.field || body["error"] != c.code || len(body) != 2 {
 				t.Errorf("%s?%.60s = %d %s", p, c.q, rec.Code, rec.Body)
 			}
 		}
@@ -123,7 +125,7 @@ func TestAdminBadParams(t *testing.T) {
 		}
 	}
 	rec := do(h, http.MethodGet, "/admin/v1/messages?cursor=@@", "Bearer "+token)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), `"field":"cursor"`) {
+	if rec.Code != 400 || strings.TrimSpace(rec.Body.String()) != `{"error":"invalid_cursor","field":"cursor"}` {
 		t.Errorf("bad cursor = %d %s", rec.Code, rec.Body)
 	}
 	ok := do(h, http.MethodGet, "/admin/v1/stats?from=2026-10-13T12:00:00Z&to=2026-11-13T12:00:00Z", "Bearer "+token)
@@ -137,7 +139,7 @@ func seed(t *testing.T, st *store.Store) {
 	in := store.EnqueueInput{
 		App: "app1", Channel: model.ChannelEmail, IdempotencyKey: "k", BodyHash: sha256.Sum256([]byte("b")),
 		Recipients: []string{"a@x.com"}, Sender: "s@x.com", Subject: "SECRET-SUBJECT", Text: "SECRET-BODY",
-		ExpiresAt: now.Add(time.Hour), PerMinute: 10, PerDay: 10, Provider: "resend",
+		ExpiresAt: now.Add(time.Hour), PerMinute: 10, PerDay: 10, Provider: "resend", SourceIP: "192.0.2.9",
 	}
 	if _, err := st.Enqueue(context.Background(), now.Add(-time.Minute), in); err != nil {
 		t.Fatal(err)
@@ -181,9 +183,12 @@ func TestAdminEndpointsShape(t *testing.T) {
 		t.Fatalf("list %v", list)
 	}
 	id := items[0].(map[string]any)["id"].(string)
+	if ip := items[0].(map[string]any)["source_ip"]; ip != "192.0.2.9" {
+		t.Fatalf("list source_ip = %v", ip)
+	}
 
 	one := get("/admin/v1/messages/" + id)
-	if one["message"].(map[string]any)["id"] != id || len(one["attempts"].([]any)) != 0 {
+	if m := one["message"].(map[string]any); m["id"] != id || m["source_ip"] != "192.0.2.9" || len(one["attempts"].([]any)) != 0 {
 		t.Fatalf("detail %v", one)
 	}
 	if rec := do(h, http.MethodGet, "/admin/v1/messages/unknown", "Bearer "+token); rec.Code != 404 || !strings.Contains(rec.Body.String(), `"error"`) {
@@ -196,5 +201,27 @@ func TestAdminEndpointsShape(t *testing.T) {
 	ov := get("/admin/v1/overview")
 	if ov["queue_depth"].(float64) != 1 || len(ov["providers"].([]any)) != 2 {
 		t.Fatalf("overview %v", ov)
+	}
+}
+
+func TestAdminFailBusyAndInternal(t *testing.T) {
+	var logs strings.Builder
+	h := &handler{log: slog.New(slog.NewJSONHandler(&logs, nil))}
+	req := httptest.NewRequest(http.MethodGet, "/admin/v1/stats", nil)
+
+	rec := httptest.NewRecorder()
+	h.fail(rec, req, fmt.Errorf("wrapped: %w", store.ErrBusy))
+	if rec.Code != 503 || rec.Header().Get("Retry-After") != "1" || strings.TrimSpace(rec.Body.String()) != `{"error":"unavailable"}` {
+		t.Fatalf("busy = %d retry-after=%q %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body)
+	}
+
+	rec = httptest.NewRecorder()
+	h.fail(rec, req, errors.New("boom"))
+	var line map[string]any
+	if err := json.Unmarshal([]byte(logs.String()), &line); err != nil {
+		t.Fatalf("log %q: %v", logs.String(), err)
+	}
+	if rec.Code != 500 || line["error"] != "boom" || line["err"] != nil {
+		t.Fatalf("internal = %d log=%v", rec.Code, line)
 	}
 }

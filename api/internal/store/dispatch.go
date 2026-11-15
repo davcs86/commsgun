@@ -93,7 +93,8 @@ func (s *Store) ClaimDue(ctx context.Context, now time.Time, limit int, channel 
 	return out, nil
 }
 
-// ProviderReserve takes one slot in the channel provider's minute and day windows unless paused or full.
+// ProviderReserve takes one slot in the channel provider's minute and day windows unless paused or full;
+// a full window is recorded as a pause until it turns over.
 func (s *Store) ProviderReserve(ctx context.Context, now time.Time, channel model.Channel, provider string, perMinute, perDay int) (ok bool, until time.Time, reason string, err error) {
 	scope := providerScope(channel, provider)
 	now = now.UTC()
@@ -128,7 +129,14 @@ func (s *Store) ProviderReserve(ctx context.Context, now time.Time, channel mode
 		return false, until, "", err
 	}
 	if blocked != nil {
-		return false, blocked.reset, blocked.kind, tx.Commit()
+		reason = windowPauseReason(blocked.kind)
+		if _, err = tx.ExecContext(ctx,
+			`INSERT INTO provider_pauses(provider, until, reason) VALUES (?,?,?)
+			 ON CONFLICT(provider) DO UPDATE SET until=excluded.until, reason=excluded.reason`,
+			scope, blocked.reset.UnixMilli(), reason); err != nil {
+			return false, until, "", err
+		}
+		return false, blocked.reset, reason, tx.Commit()
 	}
 	if err = tx.Commit(); err != nil {
 		return false, until, "", err
@@ -150,8 +158,21 @@ func (s *Store) ProviderRelease(ctx context.Context, now time.Time, channel mode
 			return translate(err)
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM provider_pauses WHERE provider=? AND reason IN (?,?)`,
+		providerScope(channel, provider), windowPauseReason(windowMinute), windowPauseReason(windowDay)); err != nil {
+		return translate(err)
+	}
 	return translate(tx.Commit())
 }
+
+// ClearWindowPauses drops every pause written for a full window, so changed limits apply at startup.
+func (s *Store) ClearWindowPauses(ctx context.Context) error {
+	_, err := s.w.ExecContext(ctx, `DELETE FROM provider_pauses WHERE reason IN (?,?)`,
+		windowPauseReason(windowMinute), windowPauseReason(windowDay))
+	return translate(err)
+}
+
+func windowPauseReason(kind string) string { return "window_" + kind }
 
 func (s *Store) PauseProvider(ctx context.Context, channel model.Channel, provider string, until time.Time, reason string) error {
 	_, err := s.w.ExecContext(ctx,

@@ -26,6 +26,16 @@ const (
 	unknownFieldPrefix = "json: unknown field "
 )
 
+// UnknownField reports the field name a DisallowUnknownFields decode rejected.
+func UnknownField(err error) (string, bool) {
+	quoted, ok := strings.CutPrefix(err.Error(), unknownFieldPrefix)
+	if !ok {
+		return "", false
+	}
+	name, _ := strconv.Unquote(quoted)
+	return name, true
+}
+
 var e164 = regexp.MustCompile(`^\+[1-9][0-9]{1,14}$`)
 
 // ValidationError is rendered as the 422 body {"error": Message, "field": Field}.
@@ -59,8 +69,7 @@ func parse(raw []byte) (request, [32]byte, *ValidationError) {
 		if errors.As(err, &te) {
 			return req, zero, &ValidationError{Message: "invalid_json", Field: te.Field}
 		}
-		if quoted, ok := strings.CutPrefix(err.Error(), unknownFieldPrefix); ok {
-			name, _ := strconv.Unquote(quoted)
+		if name, ok := UnknownField(err); ok {
 			return req, zero, &ValidationError{Message: "unknown_field", Field: name}
 		}
 		return req, zero, &ValidationError{Message: "invalid_json"}
@@ -73,15 +82,6 @@ func parse(raw []byte) (request, [32]byte, *ValidationError) {
 		return req, zero, &ValidationError{Message: "invalid_json"}
 	}
 	return req, sha256.Sum256(canonical), nil
-}
-
-// Validate fills the request-derived fields of EnqueueInput; the caller owns key, source and limits.
-func Validate(app *config.App, raw []byte, now time.Time) (*store.EnqueueInput, *ValidationError) {
-	req, hash, verr := parse(raw)
-	if verr != nil {
-		return nil, verr
-	}
-	return validateRequest(app, &req, hash, now)
 }
 
 func validateRequest(app *config.App, reqp *request, hash [32]byte, now time.Time) (*store.EnqueueInput, *ValidationError) {

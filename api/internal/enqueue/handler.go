@@ -18,9 +18,11 @@ import (
 	"github.com/davcs86/commsgun/api/internal/store"
 )
 
+// HeaderIdempotencyKey is the request header carrying the caller's idempotency key on both listeners.
+const HeaderIdempotencyKey = "Idempotency-Key"
+
 const (
 	headerApp         = "X-Commsgun-App"
-	headerKey         = "Idempotency-Key"
 	bearerPrefix      = "bearer "
 	contentTypeJSON   = "application/json"
 	errUnauthorized   = "unauthorized"
@@ -111,7 +113,7 @@ func (h *handler) serve(w *statusWriter, r *http.Request, now time.Time, info *l
 	}
 	info.app = app.ID
 
-	out, fail := Submit(r.Context(), h.cfg, h.st, now, app, r.Header.Get(headerKey), body, SourceIP(r))
+	out, fail := Submit(r.Context(), h.cfg, h.st, now, app, r.Header.Get(HeaderIdempotencyKey), body, SourceIP(r))
 	info.channel, info.recipients, info.requestID = string(out.Channel), out.Recipients, out.Result.RequestID
 	if fail != nil {
 		if fail.Status == http.StatusInternalServerError {
@@ -139,14 +141,14 @@ func writeAccepted(w http.ResponseWriter, res store.EnqueueResult) {
 	}{res.RequestID, ids, res.Duplicate})
 }
 
-// retryAfterSeconds rounds up and never advertises less than RetryAfterBusy.
-func retryAfterSeconds(d time.Duration) string {
+// RetryAfterSeconds renders a Retry-After value; it rounds up and never advertises less than RetryAfterBusy.
+func RetryAfterSeconds(d time.Duration) string {
 	d = max(d, constants.RetryAfterBusy)
 	return strconv.Itoa(int(math.Ceil(d.Seconds())))
 }
 
 func unavailable(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", retryAfterSeconds(constants.RetryAfterBusy))
+	w.Header().Set("Retry-After", RetryAfterSeconds(constants.RetryAfterBusy))
 	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": errUnavailable})
 }
 

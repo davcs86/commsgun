@@ -76,6 +76,7 @@ type Message struct {
 	FinalAt           *time.Time `json:"final_at"`
 	ExpiresAt         time.Time  `json:"expires_at"`
 	NextAttemptAt     *time.Time `json:"next_attempt_at"`
+	SourceIP          string     `json:"source_ip"`
 }
 
 type Attempt struct {
