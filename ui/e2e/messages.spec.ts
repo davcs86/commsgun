@@ -178,6 +178,7 @@ test('tapping a card opens the detail page with metadata, timeline and attempts'
 	await expect(field('App')).toHaveText('homelab');
 	await expect(field('Recipient')).toHaveText('user5@example.com');
 	await expect(field('Sender')).toHaveText('alerts@example.com');
+	await expect(field('Source IP')).toHaveText('192.0.2.10');
 	await expect(field('Provider')).toHaveText('resend');
 	await expect(field('Attempts')).toHaveText('2');
 	await expect(field('Error type')).toHaveText('timeout');

@@ -7,7 +7,7 @@ export const STUB_TOKEN = 'fake-admin-api-token-00000000000000';
 export const TEST_ADMIN_PASSWORD = 'fake-admin-password-0000';
 export const TEST_SESSION_SECRET = 'fake-session-secret-000000000000000';
 
-export const SCENARIOS = ['normal', 'empty', 'down', 'hostile', 'mixed', 'auth'] as const;
+export const SCENARIOS = ['normal', 'empty', 'down', 'hostile', 'mixed', 'auth', 'window'] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 export const ENDPOINTS = ['stats', 'overview', 'facets', 'messages'] as const;
 export type Endpoint = (typeof ENDPOINTS)[number];
@@ -189,6 +189,7 @@ function overview(scenario: Scenario, now: number) {
 	const resets = nextUtcMidnight(now);
 	const paused = scenario === 'hostile';
 	const auth = scenario === 'auth';
+	const windowFull = scenario === 'window';
 	return {
 		queue_depth: scenario === 'empty' ? 0 : 2,
 		oldest_waiting_at: scenario === 'empty' ? null : new Date(now - 10 * MINUTE).toISOString(),
@@ -198,12 +199,13 @@ function overview(scenario: Scenario, now: number) {
 				name: 'resend',
 				minute: { used: scenario === 'empty' ? 0 : 3, limit: 10 },
 				day: {
-					used: scenario === 'empty' ? 0 : paused ? 100 : 47,
+					used: scenario === 'empty' ? 0 : paused || windowFull ? 100 : 47,
 					limit: 100,
 					resets_at: resets
 				},
-				paused_until: paused ? resets : auth ? new Date(now + 10 * MINUTE).toISOString() : null,
-				pause_reason: paused ? 'daily_quota' : auth ? 'auth' : null,
+				paused_until:
+					paused || windowFull ? resets : auth ? new Date(now + 10 * MINUTE).toISOString() : null,
+				pause_reason: paused ? 'daily_quota' : auth ? 'auth' : windowFull ? 'window_day' : null,
 				held: 0
 			},
 			{

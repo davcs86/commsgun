@@ -10,7 +10,9 @@
 		daily_quota: 'Daily quota reached',
 		monthly_quota: 'Monthly quota reached',
 		rate_limit: 'Rate limited',
-		auth: 'Provider rejected the API key'
+		auth: 'Provider rejected the API key',
+		window_minute: 'Minute limit reached',
+		window_day: 'Daily limit reached'
 	};
 
 	const channelLabel = (c: string) => CHANNEL_LABELS[c as keyof typeof CHANNEL_LABELS] ?? c;
