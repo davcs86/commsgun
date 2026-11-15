@@ -67,6 +67,9 @@ func runWith(ctx context.Context, getenv func(string) string, stdout io.Writer, 
 		return err
 	}
 	defer st.Close()
+	if err := st.ClearWindowPauses(ctx); err != nil {
+		return err
+	}
 
 	w, err := worker.New(st, providers, cfg, clk, log, rand.Float64)
 	if err != nil {

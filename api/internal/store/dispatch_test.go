@@ -107,8 +107,14 @@ func TestProviderReserveWindows(t *testing.T) {
 		}
 	}
 	ok, until, reason, err := s.ProviderReserve(ctx, t0, model.ChannelEmail, "resend", 2, 3)
-	if err != nil || ok || reason != "minute" || !until.Equal(t0.Truncate(time.Minute).Add(time.Minute)) {
+	if err != nil || ok || reason != "window_minute" || !until.Equal(t0.Truncate(time.Minute).Add(time.Minute)) {
 		t.Fatalf("minute full: ok=%v until=%v reason=%q err=%v", ok, until, reason, err)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM provider_pauses WHERE provider='provider:email:resend' AND reason='window_minute' AND until=?`, until.UnixMilli()); n != 1 {
+		t.Fatalf("minute pause row = %d, want 1", n)
+	}
+	if ok, _, reason, err := s.ProviderReserve(ctx, t0, model.ChannelEmail, "resend", 2, 3); err != nil || ok || reason != "pause:window_minute" {
+		t.Fatalf("while paused: ok=%v reason=%q err=%v", ok, reason, err)
 	}
 	next := t0.Truncate(time.Minute).Add(time.Minute)
 	if ok, _, _, err := s.ProviderReserve(ctx, next, model.ChannelEmail, "resend", 2, 3); err != nil || !ok {
@@ -116,7 +122,7 @@ func TestProviderReserveWindows(t *testing.T) {
 	}
 	midnight := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
 	ok, until, reason, err = s.ProviderReserve(ctx, next, model.ChannelEmail, "resend", 2, 3)
-	if err != nil || ok || reason != "day" || !until.Equal(midnight) {
+	if err != nil || ok || reason != "window_day" || !until.Equal(midnight) {
 		t.Fatalf("day full: ok=%v until=%v reason=%q err=%v", ok, until, reason, err)
 	}
 	if n := count(t, s, `SELECT count FROM rate_counters WHERE scope='provider:email:resend' AND window_kind='day'`); n != 3 {
@@ -125,8 +131,45 @@ func TestProviderReserveWindows(t *testing.T) {
 	if err := s.ProviderRelease(ctx, next, model.ChannelEmail, "resend"); err != nil {
 		t.Fatal(err)
 	}
+	if n := count(t, s, `SELECT COUNT(*) FROM provider_pauses`); n != 0 {
+		t.Fatalf("window pause kept after release: %d", n)
+	}
 	if ok, _, _, err := s.ProviderReserve(ctx, next, model.ChannelEmail, "resend", 2, 3); err != nil || !ok {
 		t.Fatalf("after release: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestProviderReleaseKeepsProviderPause(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	if err := s.PauseProvider(ctx, model.ChannelEmail, "resend", t0.Add(time.Hour), "auth"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProviderRelease(ctx, t0, model.ChannelEmail, "resend"); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM provider_pauses WHERE reason='auth'`); n != 1 {
+		t.Fatalf("auth pause removed by release")
+	}
+}
+
+func TestClearWindowPausesKeepsProviderPauses(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	if ok, _, _, err := s.ProviderReserve(ctx, t0, model.ChannelEmail, "resend", 0, 10); err != nil || ok {
+		t.Fatalf("zero limit: ok=%v err=%v", ok, err)
+	}
+	if err := s.PauseProvider(ctx, model.ChannelSMS, "fake", t0.Add(time.Hour), "daily_quota"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClearWindowPauses(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM provider_pauses`); n != 1 {
+		t.Fatalf("pauses left = %d, want only daily_quota", n)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM provider_pauses WHERE reason='daily_quota'`); n != 1 {
+		t.Fatal("provider pause removed")
 	}
 }
 
