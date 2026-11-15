@@ -31,14 +31,13 @@ captures the **non-obvious** patterns of the Go module that no doc states. It do
 
 | ID | Norm | Why | Evidence | Example |
 |---|---|---|---|---|
-| **API-11** | Error responses never carry request data. The enqueue path and admin's fixed errors use `{"error":"<snake_code>"[,"field"|"window"]}`. Admin filter validation returns a prose message in `error` (an inconsistency logged in the findings). Reuse `enqueue.WriteFailure` / `admin.fail`. Parse bearer tokens case-insensitively the way enqueue does; admin's exact `"Bearer "` is the outlier. | Consistency with the existing wire shape; the UI is admin's only client today. | `api/internal/enqueue/submit.go#WriteFailure`, `api/internal/admin/handler.go#fail`, `api/cmd/commsgun-api/main.go#notFound`; bearer: `api/internal/enqueue/handler.go#bearer` (norm) vs `api/internal/admin/handler.go#authorized` (outlier) | `api/internal/enqueue/submit.go#WriteFailure` |
+| **API-11** | Error responses never carry request data. The enqueue path and admin's fixed errors use `{"error":"<snake_code>"[,"field"|"window"]}`. Admin filter validation uses the same shape (`invalid_range`, `range_too_long`, …). Reuse `enqueue.WriteFailure` / `admin.fail`. Parse bearer tokens case-insensitively the way enqueue does; admin's exact `"Bearer "` is the outlier. | Consistency with the existing wire shape; the UI is admin's only client today. | `api/internal/enqueue/submit.go#WriteFailure`, `api/internal/admin/handler.go#fail`, `api/cmd/commsgun-api/main.go#notFound`; bearer: `api/internal/enqueue/handler.go#bearer` (norm) vs `api/internal/admin/handler.go#authorized` (outlier) | `api/internal/enqueue/submit.go#WriteFailure` |
 
 ## Gotchas & scars
 
-- **Resend `Send` stores the provider error name raw.** `resend.go#Status` sanitises `ae.Name` through
-  `errorNamePattern`/`ProviderErrorNameMaxLen`, but `#Send` stores it unsanitised into `attempts.provider_error`, which
-  the admin API and UI display. Never log that field or reuse it in a log line. Evidence:
-  `api/internal/provider/resend.go#Send`, `#Status`.
+- **Provider error names pass `safeErrorName` before they are stored or logged.** `attempts.provider_error` is shown
+  by the admin API and UI; a new path that keeps a provider string uses the same gate. Evidence:
+  `api/internal/provider/resend.go#safeErrorName`, `#Send`, `#Status`.
 - **`sweep never deletes unfinished messages`** (commit `e608662`) and **an idempotent repeat returns the original
   result** (commit `8122f81`) are scars from the final-review fix waves. Keep both behaviours when touching
   `sweep.go` or `Enqueue`.
