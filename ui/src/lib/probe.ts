@@ -1,4 +1,4 @@
-import { PROBE_DESTINATION_MAX } from './constants.js';
+import { PROBE_DESTINATION_MAX, PROBE_KEY, PROVIDER_NAME } from './constants.js';
 import { CHANNELS, type Channel } from './types.js';
 
 export type ProbeChannel = {
@@ -17,8 +17,6 @@ export type ProbeResult =
 	| { kind: 'unavailable' }
 	| { kind: 'error' };
 
-const PROBE_KEY = /^[A-Za-z0-9-]{1,64}$/;
-const PROVIDER_NAME = /^[a-z0-9-]{1,32}$/;
 // One bare address: no display name, whitespace or list separators. The API has the final say.
 const EMAIL = /^[^\s<>"(),;:\\@]+@[^\s<>"(),;:\\@]+$/;
 const E164 = /^\+[1-9][0-9]{1,14}$/;

@@ -245,6 +245,17 @@ test('API down: the dialog says so, Retry recovers, and a failed send can be ret
 	expect(await receivedProbes()).toHaveLength(1);
 });
 
+test('with only probes down, the page renders and the dialog says the API is unavailable', async ({
+	page
+}) => {
+	await setScenario('normal', ['probes']);
+	await page.goto('/');
+	await expect(page.getByTestId('stat-tiles')).toBeVisible();
+	await expect(page.getByRole('alert')).toHaveCount(0);
+	await page.getByRole('button', { name: 'Send probe' }).click();
+	await expect(dialog(page).getByText('The API is unavailable.')).toBeVisible();
+});
+
 test('POST /probe refuses another origin, a bad body and a signed-out caller', async ({
 	page,
 	playwright,

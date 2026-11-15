@@ -1,7 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
+import { SESSION_COOKIE } from '../src/lib/server/constants.js';
 import { TEST_ADMIN_PASSWORD as PASSWORD } from './stub-api.js';
-
-const SESSION_COOKIE = 'commsgun_session';
 
 // Each test posts from its own x-forwarded-for address, so each has its own limiter budget.
 test.beforeEach(async ({ context }, testInfo) => {

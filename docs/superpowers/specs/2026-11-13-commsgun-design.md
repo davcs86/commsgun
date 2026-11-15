@@ -398,7 +398,7 @@ Mobile-first: every page is designed at phone width first and widens to a table/
   `HMAC-SHA256(SESSION_SECRET, "commsgun-session-key\0" + ADMIN_PASSWORD)`, computed once at start, so
   changing the password or the secret in SOPS and redeploying invalidates every session.
 - Failed logins are limited to 5 per minute per client address, in memory **(call)**.
-- A server hook guards every route except `/login` and `/healthz`.
+- A server hook guards every route except `/login`, `/logout` and `/healthz`.
 - The browser only ever talks to the SvelteKit server; server-side `load` functions call the admin
   API with `ADMIN_API_TOKEN`. The token and the Go container are never exposed to the browser.
 
@@ -468,8 +468,8 @@ buckets are fixed UTC intervals, labelled in local time.
 | `ADMIN_PASSWORD` | The admin password (secret). The server refuses to start if it is shorter than 16 characters |
 | `SESSION_SECRET` | Cookie signing key (secret, ≥ 32 characters) |
 | `ADMIN_API_TOKEN` | Shared with the API container (secret) |
-| `API_BASE_URL` | `http://commsgun-api:9201` on the edge |
-| `ORIGIN` | The dashboard's public origin, `https://commsgun.ts.<domain>`. The server rejects (400) any request whose derived origin differs, except `/healthz` |
+| `API_BASE_URL` | `http://commsgun-api:9201` on the edge. The server refuses to start unless it is an `http`/`https` URL |
+| `ORIGIN` | The dashboard's public origin, `https://commsgun.ts.<domain>`. The server refuses to start unless it is an `http`/`https` URL, and rejects (400) any request whose derived origin differs, except `/healthz` |
 | `PROTOCOL_HEADER`, `HOST_HEADER`, `ADDRESS_HEADER`, `XFF_DEPTH` | Set **in the image** to `x-forwarded-proto`, `x-forwarded-host`, `x-forwarded-for`, `1`: the Node adapter derives the request origin and the client address (the login limiter's key) from the proxy's headers, not from `ORIGIN`. Safe only because the port is bound to `127.0.0.1` behind Caddy |
 | `PORT` | 9202 |
 

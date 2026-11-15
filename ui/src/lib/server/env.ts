@@ -1,4 +1,5 @@
 import * as privateEnv from '$app/env/private';
+import { MIN_ADMIN_API_TOKEN, MIN_ADMIN_PASSWORD, MIN_SESSION_SECRET } from './constants';
 import { deriveSessionKey } from './session';
 
 export type Env = {
@@ -9,10 +10,6 @@ export type Env = {
 	origin: string;
 	sessionKey: Buffer;
 };
-
-const MIN_ADMIN_PASSWORD = 16;
-const MIN_SESSION_SECRET = 32;
-const MIN_ADMIN_API_TOKEN = 32;
 
 function isHttpUrl(value: string): boolean {
 	return URL.canParse(value) && /^https?:$/.test(new URL(value).protocol);
