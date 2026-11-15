@@ -93,25 +93,25 @@ func TestAdminRejectsNonGET(t *testing.T) {
 func TestAdminBadParams(t *testing.T) {
 	h, _ := setup(t)
 	long := strings.Repeat("a", 201)
-	cases := []struct{ q, field string }{
-		{"from=2026-11-13T12:00:00Z&to=2026-11-13T11:00:00Z", "from"},
-		{"from=2026-11-13T12:00:00Z&to=2026-11-13T12:00:00Z", "from"},
-		{"from=yesterday", "from"},
-		{"to=nope", "to"},
-		{"from=2026-10-01T00:00:00Z&to=2026-11-13T00:00:00Z", "from"},
-		{"channel=fax", "channel"},
-		{"state=lost", "state"},
-		{"recipient=" + long, "recipient"},
-		{"sender=" + long, "sender"},
-		{"app=" + long, "app"},
-		{"error_type=" + long, "error_type"},
+	cases := []struct{ q, code, field string }{
+		{"from=2026-11-13T12:00:00Z&to=2026-11-13T11:00:00Z", "invalid_range", "from"},
+		{"from=2026-11-13T12:00:00Z&to=2026-11-13T12:00:00Z", "invalid_range", "from"},
+		{"from=yesterday", "invalid_instant", "from"},
+		{"to=nope", "invalid_instant", "to"},
+		{"from=2026-10-01T00:00:00Z&to=2026-11-13T00:00:00Z", "range_too_long", "from"},
+		{"channel=fax", "invalid_channel", "channel"},
+		{"state=lost", "invalid_state", "state"},
+		{"recipient=" + long, "filter_too_long", "recipient"},
+		{"sender=" + long, "filter_too_long", "sender"},
+		{"app=" + long, "filter_too_long", "app"},
+		{"error_type=" + long, "filter_too_long", "error_type"},
 	}
 	for _, p := range []string{"/admin/v1/stats", "/admin/v1/messages"} {
 		for _, c := range cases {
 			rec := do(h, http.MethodGet, p+"?"+c.q, "Bearer "+token)
 			var body map[string]string
 			_ = json.Unmarshal(rec.Body.Bytes(), &body)
-			if rec.Code != 400 || body["field"] != c.field || body["error"] == "" {
+			if rec.Code != 400 || body["field"] != c.field || body["error"] != c.code || len(body) != 2 {
 				t.Errorf("%s?%.60s = %d %s", p, c.q, rec.Code, rec.Body)
 			}
 		}
@@ -123,7 +123,7 @@ func TestAdminBadParams(t *testing.T) {
 		}
 	}
 	rec := do(h, http.MethodGet, "/admin/v1/messages?cursor=@@", "Bearer "+token)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), `"field":"cursor"`) {
+	if rec.Code != 400 || strings.TrimSpace(rec.Body.String()) != `{"error":"invalid_cursor","field":"cursor"}` {
 		t.Errorf("bad cursor = %d %s", rec.Code, rec.Body)
 	}
 	ok := do(h, http.MethodGet, "/admin/v1/stats?from=2026-10-13T12:00:00Z&to=2026-11-13T12:00:00Z", "Bearer "+token)

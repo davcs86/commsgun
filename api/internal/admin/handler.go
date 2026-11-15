@@ -24,6 +24,14 @@ const (
 	bearer     = "Bearer "
 	errUnauth  = "unauthorized"
 	errMissing = "not_found"
+
+	errInvalidInstant = "invalid_instant"
+	errInvalidRange   = "invalid_range"
+	errRangeTooLong   = "range_too_long"
+	errInvalidChannel = "invalid_channel"
+	errInvalidState   = "invalid_state"
+	errFilterTooLong  = "filter_too_long"
+	errInvalidCursor  = "invalid_cursor"
 )
 
 type handler struct {
@@ -80,11 +88,12 @@ func (h *handler) authorized(r *http.Request) bool {
 	return subtle.ConstantTimeCompare(sum[:], h.token[:]) == 1 && ok
 }
 
-type paramError struct{ msg, field string }
+// paramError is rendered as the 400 body {"error": code, "field": field}.
+type paramError struct{ code, field string }
 
-func (e *paramError) Error() string { return e.msg }
+func (e *paramError) Error() string { return e.code }
 
-func bad(msg, field string) error { return &paramError{msg, field} }
+func bad(code, field string) error { return &paramError{code, field} }
 
 func (h *handler) filter(r *http.Request) (store.Filter, error) {
 	q := r.URL.Query()
@@ -93,34 +102,34 @@ func (h *handler) filter(r *http.Request) (store.Filter, error) {
 	f.To = h.clk.Now().UTC()
 	if v := q.Get("to"); v != "" {
 		if f.To, err = time.Parse(time.RFC3339, v); err != nil {
-			return f, bad("to must be an RFC 3339 instant", "to")
+			return f, bad(errInvalidInstant, "to")
 		}
 		f.To = f.To.UTC()
 	}
 	f.From = f.To.Add(-constants.AdminDefaultRange)
 	if v := q.Get("from"); v != "" {
 		if f.From, err = time.Parse(time.RFC3339, v); err != nil {
-			return f, bad("from must be an RFC 3339 instant", "from")
+			return f, bad(errInvalidInstant, "from")
 		}
 		f.From = f.From.UTC()
 	}
 	if !f.From.Before(f.To) {
-		return f, bad("from must be before to", "from")
+		return f, bad(errInvalidRange, "from")
 	}
 	if f.To.Sub(f.From) > constants.AdminMaxRange {
-		return f, bad("range must not exceed 31 days", "from")
+		return f, bad(errRangeTooLong, "from")
 	}
 	f.Channel, f.App, f.State = q.Get("channel"), q.Get("app"), q.Get("state")
 	f.ErrorType, f.Recipient, f.Sender = q.Get("error_type"), q.Get("recipient"), q.Get("sender")
 	if c := model.Channel(f.Channel); f.Channel != "" && c != model.ChannelEmail && c != model.ChannelSMS {
-		return f, bad("unknown channel", "channel")
+		return f, bad(errInvalidChannel, "channel")
 	}
 	if f.State != "" && !knownState(model.State(f.State)) {
-		return f, bad("unknown state", "state")
+		return f, bad(errInvalidState, "state")
 	}
 	for _, t := range []struct{ field, v string }{{"app", f.App}, {"error_type", f.ErrorType}, {"recipient", f.Recipient}, {"sender", f.Sender}} {
 		if len(t.v) > constants.AdminFilterMaxLen {
-			return f, bad("filter text too long", t.field)
+			return f, bad(errFilterTooLong, t.field)
 		}
 	}
 	return f, nil
@@ -153,7 +162,7 @@ func (h *handler) messages(w http.ResponseWriter, r *http.Request) {
 	}
 	items, next, err := h.st.ListMessages(r.Context(), f, r.URL.Query().Get("cursor"), constants.AdminPageSize)
 	if errors.Is(err, store.ErrBadCursor) {
-		err = bad("invalid cursor", "cursor")
+		err = bad(errInvalidCursor, "cursor")
 	}
 	var cursor *string
 	if next != "" {
@@ -189,7 +198,7 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var pe *paramError
 	switch {
 	case errors.As(err, &pe):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": pe.msg, "field": pe.field})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": pe.code, "field": pe.field})
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": errMissing})
 	case errors.Is(err, store.ErrBusy):
