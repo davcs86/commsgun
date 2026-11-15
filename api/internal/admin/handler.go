@@ -8,13 +8,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/davcs86/commsgun/api/internal/clock"
 	"github.com/davcs86/commsgun/api/internal/config"
 	"github.com/davcs86/commsgun/api/internal/constants"
+	"github.com/davcs86/commsgun/api/internal/enqueue"
 	"github.com/davcs86/commsgun/api/internal/model"
 	"github.com/davcs86/commsgun/api/internal/store"
 )
@@ -202,10 +202,10 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": errMissing})
 	case errors.Is(err, store.ErrBusy):
-		w.Header().Set("Retry-After", strconv.Itoa(int(constants.RetryAfterBusy/time.Second)))
+		w.Header().Set("Retry-After", enqueue.RetryAfterSeconds(constants.RetryAfterBusy))
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
 	default:
-		h.log.Error("admin query failed", "path", r.URL.Path, "err", err.Error())
+		h.log.Error("admin query failed", "path", r.URL.Path, "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 	}
 }

@@ -6,8 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strconv"
-	"strings"
 
 	"github.com/davcs86/commsgun/api/internal/constants"
 	"github.com/davcs86/commsgun/api/internal/enqueue"
@@ -20,9 +18,6 @@ const (
 	probeText      = "Hello world"
 	probeNamespace = "probe"
 	probeMethods   = "GET, POST"
-	headerIdemKey  = "Idempotency-Key"
-	// unknownFieldPrefix is encoding/json's DisallowUnknownFields error text before the quoted name.
-	unknownFieldPrefix = "json: unknown field "
 )
 
 var probeChannels = []model.Channel{model.ChannelEmail, model.ChannelSMS}
@@ -108,8 +103,7 @@ func (h *handler) probeSend(w http.ResponseWriter, r *http.Request) (status int,
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		var te *json.UnmarshalTypeError
-		if quoted, ok := strings.CutPrefix(err.Error(), unknownFieldPrefix); ok {
-			name, _ := strconv.Unquote(quoted)
+		if name, ok := enqueue.UnknownField(err); ok {
 			return reject(http.StatusUnprocessableEntity, "unknown_field", name)
 		}
 		if errors.As(err, &te) {
@@ -151,7 +145,7 @@ func (h *handler) probeSend(w http.ResponseWriter, r *http.Request) (status int,
 		return reject(http.StatusInternalServerError, "internal", "")
 	}
 	out, fail := enqueue.SubmitNamespaced(r.Context(), h.cfg, h.st, h.clk.Now(), &app, probeNamespace,
-		r.Header.Get(headerIdemKey), body, enqueue.SourceIP(r))
+		r.Header.Get(enqueue.HeaderIdempotencyKey), body, enqueue.SourceIP(r))
 	if fail != nil {
 		enqueue.WriteFailure(w, fail)
 		return fail.Status, channel, ""

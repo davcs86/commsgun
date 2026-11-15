@@ -26,6 +26,16 @@ const (
 	unknownFieldPrefix = "json: unknown field "
 )
 
+// UnknownField reports the field name a DisallowUnknownFields decode rejected.
+func UnknownField(err error) (string, bool) {
+	quoted, ok := strings.CutPrefix(err.Error(), unknownFieldPrefix)
+	if !ok {
+		return "", false
+	}
+	name, _ := strconv.Unquote(quoted)
+	return name, true
+}
+
 var e164 = regexp.MustCompile(`^\+[1-9][0-9]{1,14}$`)
 
 // ValidationError is rendered as the 422 body {"error": Message, "field": Field}.
@@ -59,8 +69,7 @@ func parse(raw []byte) (request, [32]byte, *ValidationError) {
 		if errors.As(err, &te) {
 			return req, zero, &ValidationError{Message: "invalid_json", Field: te.Field}
 		}
-		if quoted, ok := strings.CutPrefix(err.Error(), unknownFieldPrefix); ok {
-			name, _ := strconv.Unquote(quoted)
+		if name, ok := UnknownField(err); ok {
 			return req, zero, &ValidationError{Message: "unknown_field", Field: name}
 		}
 		return req, zero, &ValidationError{Message: "invalid_json"}

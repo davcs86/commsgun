@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -196,5 +198,27 @@ func TestAdminEndpointsShape(t *testing.T) {
 	ov := get("/admin/v1/overview")
 	if ov["queue_depth"].(float64) != 1 || len(ov["providers"].([]any)) != 2 {
 		t.Fatalf("overview %v", ov)
+	}
+}
+
+func TestAdminFailBusyAndInternal(t *testing.T) {
+	var logs strings.Builder
+	h := &handler{log: slog.New(slog.NewJSONHandler(&logs, nil))}
+	req := httptest.NewRequest(http.MethodGet, "/admin/v1/stats", nil)
+
+	rec := httptest.NewRecorder()
+	h.fail(rec, req, fmt.Errorf("wrapped: %w", store.ErrBusy))
+	if rec.Code != 503 || rec.Header().Get("Retry-After") != "1" || strings.TrimSpace(rec.Body.String()) != `{"error":"unavailable"}` {
+		t.Fatalf("busy = %d retry-after=%q %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body)
+	}
+
+	rec = httptest.NewRecorder()
+	h.fail(rec, req, errors.New("boom"))
+	var line map[string]any
+	if err := json.Unmarshal([]byte(logs.String()), &line); err != nil {
+		t.Fatalf("log %q: %v", logs.String(), err)
+	}
+	if rec.Code != 500 || line["error"] != "boom" || line["err"] != nil {
+		t.Fatalf("internal = %d log=%v", rec.Code, line)
 	}
 }

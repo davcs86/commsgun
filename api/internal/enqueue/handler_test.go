@@ -164,9 +164,9 @@ func TestIdempotencyKeyValidation(t *testing.T) {
 		"slash":     "a/b",
 	}
 	for name, key := range cases {
-		opts := []reqOpt{header(headerKey, key)}
+		opts := []reqOpt{header(HeaderIdempotencyKey, key)}
 		if key == "" {
-			opts = []reqOpt{noHeader(headerKey)}
+			opts = []reqOpt{noHeader(HeaderIdempotencyKey)}
 		}
 		w := do(newHandler(testConfig(), okStore()), newReq(testBody, opts...))
 		m := jsonBody(t, w.Body)
@@ -175,7 +175,7 @@ func TestIdempotencyKeyValidation(t *testing.T) {
 		}
 	}
 	for _, key := range []string{strings.Repeat("k", 200), "a.b_c:d-E9"} {
-		if w := do(newHandler(testConfig(), okStore()), newReq(testBody, header(headerKey, key))); w.Code != 202 {
+		if w := do(newHandler(testConfig(), okStore()), newReq(testBody, header(HeaderIdempotencyKey, key))); w.Code != 202 {
 			t.Fatalf("key %q: %d", key, w.Code)
 		}
 	}
@@ -360,7 +360,7 @@ func TestSameKeyDifferentBodyAfterExpiryIs409(t *testing.T) {
 
 func TestAuthBeatsKeyCheck(t *testing.T) {
 	w := do(newHandler(testConfig(), okStore()),
-		newReq(testBody, header("Authorization", "Bearer "+strings.Repeat("z", 40)), noHeader(headerKey)))
+		newReq(testBody, header("Authorization", "Bearer "+strings.Repeat("z", 40)), noHeader(HeaderIdempotencyKey)))
 	if w.Code != 401 {
 		t.Fatalf("got %d", w.Code)
 	}
