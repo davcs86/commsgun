@@ -258,6 +258,17 @@ test('detail with the API down is a 200 with a retry link', async ({ page }) => 
 	);
 });
 
+test('with only the detail endpoint down, the list loads and the detail shows the error', async ({
+	page
+}) => {
+	await setScenario('normal', ['message']);
+	await page.goto('/messages');
+	await expect(page.getByRole('alert')).toHaveCount(0);
+	const response = await page.goto(`/messages/${FAILED_ID}`);
+	expect(response?.status()).toBe(200);
+	await expect(page.getByText('The delivery API is not responding')).toBeVisible();
+});
+
 test('hostile data is text, fires no dialog and does not widen the list or detail page', async ({
 	page
 }) => {

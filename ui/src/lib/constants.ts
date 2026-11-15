@@ -15,3 +15,5 @@ export const RANGE_SECONDS = {
 } as const;
 export const REFRESH_INTERVAL_MS = 30_000;
 export const PROBE_DESTINATION_MAX = 320;
+export const PROBE_KEY = /^[A-Za-z0-9-]{1,64}$/;
+export const PROVIDER_NAME = /^[a-z0-9-]{1,32}$/;

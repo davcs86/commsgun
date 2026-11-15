@@ -86,7 +86,7 @@ scripts/smoke.sh commsgun-api:dev commsgun-ui:dev   # runs both together on the 
 ```
 
 Tests: `cd api && go vet ./... && go test ./... -race` (CI also runs `gofmt -l` and staticcheck; see `CLAUDE.md`);
-`cd ui && pnpm install && pnpm check && pnpm lint && pnpm test && pnpm test:e2e`.
+`cd ui && pnpm install --frozen-lockfile && pnpm check && pnpm lint && pnpm test && pnpm test:e2e`.
 CI (`.github/workflows/ci.yml`) runs the same, then publishes both images on `main`.
 
 ## Release
