@@ -1,7 +1,7 @@
 # commsgun ui — Constitution Findings
 
-Defects and drift surfaced by `/context-constitution` (context-forge) on 2026-11-15 from branch
-`claude/context-constitution-parity-zggeq3` at commit `e139e1b` while deriving the constitution. These are for triage,
+Defects and drift surfaced by `/context-constitution` (context-forge) on 2026-11-15; last refreshed 2026-11-15 from branch
+`claude/context-constitution-parity-zggeq3` at commit `6ca1c16` while deriving the constitution. These are for triage,
 not governance: a defect is not a rule. This log is maintained (**CF-N12**): `/context-constitution refresh` re-verifies
 every open row and retires the rows that no longer reproduce to `## Resolved`.
 
@@ -31,7 +31,7 @@ _None._
 - `ui/src/lib/utils.ts` re-exports `cn` from the npm package `cn` (devDep `^0.5.2`), not shadcn's
   `clsx` + `tailwind-merge`. Does it do the Tailwind conflict merging the generated `components/ui/**` relies on?
   Status: **open**.
-- `ui/src/lib/session.ts#verifySession` re-encodes the signature and compares it to the input before
+- `ui/src/lib/server/session.ts#verifySession` re-encodes the signature and compares it to the input before
   `timingSafeEqual`. Is that meant to reject malleable base64url? Status: **open**.
 - The login cookie is set `secure: true` while e2e runs on plain-http 127.0.0.1, relying on Chromium treating
   loopback as a secure context. Intended? Status: **open**.

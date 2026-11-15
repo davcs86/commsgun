@@ -1,7 +1,7 @@
 # commsgun (root) — Constitution Findings
 
-Defects and drift surfaced by `/context-constitution` (context-forge) on 2026-11-15 from branch
-`claude/context-constitution-parity-zggeq3` at commit `e139e1b` while deriving the constitution. These are for triage,
+Defects and drift surfaced by `/context-constitution` (context-forge) on 2026-11-15; last refreshed 2026-11-15 from branch
+`claude/context-constitution-parity-zggeq3` at commit `6ca1c16` while deriving the constitution. These are for triage,
 not governance: a defect is not a rule. This log is maintained (**CF-N12**): `/context-constitution refresh` re-verifies
 every open row and retires the rows that no longer reproduce to `## Resolved`.
 
@@ -15,9 +15,9 @@ every open row and retires the rows that no longer reproduce to `## Resolved`.
 
 ## Latent bugs (looks broken, not merely non-obvious)
 
-| Issue | Impact | Evidence |
-|---|---|---|
-| ⚠ The enqueue log line records the caller-supplied `X-Commsgun-App` header even on a 401 | An unauthenticated client writes arbitrary text into the log | `api/internal/enqueue/handler.go#logInfo` |
+| What the docs say / issue | Evidence (was) | Resolved | How confirmed |
+|---|---|---|---|
+| ⚠ "The enqueue log line records the caller-supplied `X-Commsgun-App` header even on a 401" | `api/internal/enqueue/handler.go#logInfo` | 2026-11-15 | False positive from the forge: re-checking `api/internal/enqueue/handler.go#ServeHTTP` shows `info.app = app.ID` (the config id) is set only after `Authenticate` succeeds; a 401 returns first and logs `app=""` (context-scrubber audit) |
 
 ## Dead / orphaned code
 

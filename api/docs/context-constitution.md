@@ -1,7 +1,7 @@
 # commsgun api — Constitution
 
-Derived by `/context-constitution` (context-forge) on 2026-11-15 from branch
-`claude/context-constitution-parity-zggeq3` at commit `e139e1b` — the repo state this analysis reflects. This file
+Derived by `/context-constitution` (context-forge) on 2026-11-15; last refreshed 2026-11-15 from branch
+`claude/context-constitution-parity-zggeq3` at commit `6ca1c16` — the repo state this analysis reflects. This file
 captures the **non-obvious** patterns of the Go module that no doc states. It does not restate `CLAUDE.md` or CI.
 
 > Inherits all rules of the root constitution (`../../docs/context-constitution.md`, `CG-*`). This file lists only
@@ -31,7 +31,7 @@ captures the **non-obvious** patterns of the Go module that no doc states. It do
 
 | ID | Norm | Why | Evidence | Example |
 |---|---|---|---|---|
-| **API-11** | Error responses are `{"error":"<snake_code>"[,"field"|"window"]}` with no request data. Reuse `enqueue.WriteFailure` / `admin.fail`. Parse bearer tokens case-insensitively the way enqueue does; admin's exact `"Bearer "` is the outlier. | Consistency with the existing wire shape; the UI is admin's only client today. | `api/internal/enqueue/submit.go#WriteFailure`, `api/internal/admin/handler.go#fail`, `api/cmd/commsgun-api/main.go#notFound`; bearer: `api/internal/enqueue/handler.go#bearer` (norm) vs `api/internal/admin/handler.go#authorized` (outlier) | `api/internal/enqueue/submit.go#WriteFailure` |
+| **API-11** | Error responses never carry request data. The enqueue path and admin's fixed errors use `{"error":"<snake_code>"[,"field"|"window"]}`. Admin filter validation returns a prose message in `error` (an inconsistency logged in the findings). Reuse `enqueue.WriteFailure` / `admin.fail`. Parse bearer tokens case-insensitively the way enqueue does; admin's exact `"Bearer "` is the outlier. | Consistency with the existing wire shape; the UI is admin's only client today. | `api/internal/enqueue/submit.go#WriteFailure`, `api/internal/admin/handler.go#fail`, `api/cmd/commsgun-api/main.go#notFound`; bearer: `api/internal/enqueue/handler.go#bearer` (norm) vs `api/internal/admin/handler.go#authorized` (outlier) | `api/internal/enqueue/submit.go#WriteFailure` |
 
 ## Gotchas & scars
 

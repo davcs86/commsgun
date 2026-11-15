@@ -1,7 +1,7 @@
 # commsgun (root) — Constitution
 
-Derived by `/context-constitution` (context-forge) on 2026-11-15 from branch
-`claude/context-constitution-parity-zggeq3` at commit `e139e1b` — the repo state this analysis reflects; a later
+Derived by `/context-constitution` (context-forge) on 2026-11-15; last refreshed 2026-11-15 from branch
+`claude/context-constitution-parity-zggeq3` at commit `6ca1c16` — the repo state this analysis reflects; a later
 `refresh` reruns against a newer commit. This file captures the **non-obvious**: the seams between `api/` and `ui/`,
 and between this repo and `davcs86/homelab-edge`, that no doc states, plus the scars behind them. It does **not**
 restate `CLAUDE.md`, the plans' "Frozen contracts" tables (K1–K6, U1–U4) or CI (see `## Pointers`). Module-specific

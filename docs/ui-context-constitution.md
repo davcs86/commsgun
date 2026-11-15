@@ -1,7 +1,7 @@
 # commsgun ui — Constitution
 
-Derived by `/context-constitution` (context-forge) on 2026-11-15 from branch
-`claude/context-constitution-parity-zggeq3` at commit `e139e1b` — the repo state this analysis reflects. This file
+Derived by `/context-constitution` (context-forge) on 2026-11-15; last refreshed 2026-11-15 from branch
+`claude/context-constitution-parity-zggeq3` at commit `6ca1c16` — the repo state this analysis reflects. This file
 captures the **non-obvious** patterns of the SvelteKit dashboard that no doc states. It does not restate
 `CLAUDE.md`, the spec or CI.
 
@@ -30,7 +30,7 @@ captures the **non-obvious** patterns of the SvelteKit dashboard that no doc sta
 
 | ID | Norm | Why | Evidence | Example |
 |---|---|---|---|---|
-| **UI-08** | Import through the Node subpath alias `#lib/*` with a `.js` extension, not `$lib/...`. | One style across N≥10 sites; `hooks.server.ts`'s relative extensionless import is the outlier. | `ui/package.json` (`imports`), `ui/src/routes/+page.server.ts`, `ui/src/routes/probe/+server.ts` vs `ui/src/hooks.server.ts` (outlier) | `ui/src/routes/probe/+server.ts` |
+| **UI-08** | Routes and components import through the Node subpath alias `#lib/*` with a `.js` extension, not `$lib/...`. Modules inside `src/lib/` import each other relatively. | One style across N≥10 route and component sites. `hooks.server.ts` and the extensionless relative imports in `src/lib/server/env.ts`/`session.ts` are outliers. | `ui/package.json` (`imports`), `ui/src/routes/+page.server.ts`, `ui/src/routes/probe/+server.ts` vs `ui/src/hooks.server.ts` (outlier) | `ui/src/routes/probe/+server.ts` |
 
 ## Gotchas & scars
 
