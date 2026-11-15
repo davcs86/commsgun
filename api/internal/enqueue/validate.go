@@ -84,15 +84,6 @@ func parse(raw []byte) (request, [32]byte, *ValidationError) {
 	return req, sha256.Sum256(canonical), nil
 }
 
-// Validate fills the request-derived fields of EnqueueInput; the caller owns key, source and limits.
-func Validate(app *config.App, raw []byte, now time.Time) (*store.EnqueueInput, *ValidationError) {
-	req, hash, verr := parse(raw)
-	if verr != nil {
-		return nil, verr
-	}
-	return validateRequest(app, &req, hash, now)
-}
-
 func validateRequest(app *config.App, reqp *request, hash [32]byte, now time.Time) (*store.EnqueueInput, *ValidationError) {
 	req := *reqp
 	ch := model.Channel(req.Channel)

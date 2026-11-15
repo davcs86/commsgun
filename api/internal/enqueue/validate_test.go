@@ -8,12 +8,22 @@ import (
 
 	"github.com/davcs86/commsgun/api/internal/config"
 	"github.com/davcs86/commsgun/api/internal/model"
+	"github.com/davcs86/commsgun/api/internal/store"
 )
 
 func appNamed(t *testing.T, id string) *config.App {
 	t.Helper()
 	a := testConfig().Apps[id]
 	return &a
+}
+
+// validate runs the same parse-then-validate path SubmitNamespaced does.
+func validate(app *config.App, raw []byte, now time.Time) (*store.EnqueueInput, *ValidationError) {
+	req, hash, verr := parse(raw)
+	if verr != nil {
+		return nil, verr
+	}
+	return validateRequest(app, &req, hash, now)
 }
 
 func TestValidateRejects(t *testing.T) {
@@ -49,7 +59,7 @@ func TestValidateRejects(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			in, verr := Validate(appNamed(t, testApp), []byte(c.body), testNow)
+			in, verr := validate(appNamed(t, testApp), []byte(c.body), testNow)
 			if verr == nil || in != nil {
 				t.Fatalf("want rejection, got in=%v verr=%v", in, verr)
 			}
@@ -61,7 +71,7 @@ func TestValidateRejects(t *testing.T) {
 }
 
 func TestValidateNoDefaultSender(t *testing.T) {
-	_, verr := Validate(appNamed(t, "nodefault"), []byte(testBody), testNow)
+	_, verr := validate(appNamed(t, "nodefault"), []byte(testBody), testNow)
 	if verr == nil || verr.Message != "sender_required" || verr.Field != "from" {
 		t.Fatalf("got %+v", verr)
 	}
@@ -69,14 +79,14 @@ func TestValidateNoDefaultSender(t *testing.T) {
 
 func TestValidateRecipientsAboveLimit(t *testing.T) {
 	body := `{"channel":"email","to":["a@e.co","b@e.co","c@e.co"],"subject":"s","text":"t"}`
-	_, verr := Validate(appNamed(t, "tiny"), []byte(body), testNow)
+	_, verr := validate(appNamed(t, "tiny"), []byte(body), testNow)
 	if verr == nil || verr.Message != "too_many_recipients_for_limit" || verr.Field != "to" {
 		t.Fatalf("got %+v", verr)
 	}
 }
 
 func TestValidateDefaults(t *testing.T) {
-	in, verr := Validate(appNamed(t, testApp), []byte(testBody), testNow)
+	in, verr := validate(appNamed(t, testApp), []byte(testBody), testNow)
 	if verr != nil {
 		t.Fatal(verr)
 	}
@@ -90,7 +100,7 @@ func TestValidateDefaults(t *testing.T) {
 
 func TestValidateExpiresBoundaryAccepted(t *testing.T) {
 	body := `{"channel":"email","to":["a@example.com"],"subject":"s","text":"t","expires_at":"2026-11-14T12:00:00Z"}`
-	in, verr := Validate(appNamed(t, testApp), []byte(body), testNow)
+	in, verr := validate(appNamed(t, testApp), []byte(body), testNow)
 	if verr != nil || !in.ExpiresAt.Equal(testNow.Add(24*time.Hour)) {
 		t.Fatalf("got %v %v", in, verr)
 	}
@@ -100,9 +110,9 @@ func TestValidateBodyHashIgnoresKeyOrderAndWhitespace(t *testing.T) {
 	a := `{"channel":"email","to":["a@example.com"],"subject":"hi","text":"hello"}`
 	b := "{ \"text\": \"hello\",\n \"subject\":\"hi\", \"to\":[\"a@example.com\"], \"channel\":\"email\" }"
 	c := `{"channel":"email","to":["a@example.com"],"subject":"hi","text":"other"}`
-	ia, _ := Validate(appNamed(t, testApp), []byte(a), testNow)
-	ib, _ := Validate(appNamed(t, testApp), []byte(b), testNow)
-	ic, _ := Validate(appNamed(t, testApp), []byte(c), testNow)
+	ia, _ := validate(appNamed(t, testApp), []byte(a), testNow)
+	ib, _ := validate(appNamed(t, testApp), []byte(b), testNow)
+	ic, _ := validate(appNamed(t, testApp), []byte(c), testNow)
 	if ia.BodyHash != ib.BodyHash {
 		t.Fatal("same request hashed differently")
 	}
@@ -112,7 +122,7 @@ func TestValidateBodyHashIgnoresKeyOrderAndWhitespace(t *testing.T) {
 }
 
 func TestValidateSMS(t *testing.T) {
-	in, verr := Validate(appNamed(t, testApp), []byte(testSMS), testNow)
+	in, verr := validate(appNamed(t, testApp), []byte(testSMS), testNow)
 	if verr != nil {
 		t.Fatal(verr)
 	}
