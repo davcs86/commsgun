@@ -18,7 +18,7 @@ func (s *Store) DuePolls(ctx context.Context, now time.Time, limit int) ([]model
 	if limit <= 0 {
 		return nil, nil
 	}
-	rows, err := s.w.QueryContext(ctx,
+	rows, err := s.r.QueryContext(ctx,
 		`SELECT `+messageCols+` FROM messages WHERE state=? AND next_poll_at<=? ORDER BY next_poll_at, rowid LIMIT ?`,
 		model.StateSent, now.UTC().UnixMilli(), limit)
 	if err != nil {
