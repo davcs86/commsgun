@@ -69,7 +69,6 @@ calls the admin API server-side; read-only except the hello-world probe (`POST /
 
 ## Release
 
-Merging to `main` deploys **nothing**; it only publishes new image digests, and the edge goes live only after
-`davcs86/homelab-edge` bumps and deploys them (`README.md#Release`). When you finish a change, say in your report
+Release mechanics: `README.md#Release`. When you finish a change, say in your report
 which image content changed (`api/` or `ui/` sources, Dockerfile, dependencies) and that the edge still needs the
 bump PR merged and a deploy; do not open a bump PR by hand.

@@ -35,8 +35,6 @@ captures the **non-obvious** patterns of the Go module that no doc states. It do
 
 ## Gotchas & scars
 
-- **`/healthz/backlog` is mounted only on the enqueue listener**, while `/healthz` is on both; Gatus probes the
-  backlog through the enqueue hostname. Evidence: `api/cmd/commsgun-api/main.go#runWith`.
 - **Resend `Send` stores the provider error name raw.** `resend.go#Status` sanitises `ae.Name` through
   `errorNamePattern`/`ProviderErrorNameMaxLen`, but `#Send` stores it unsanitised into `attempts.provider_error`, which
   the admin API and UI display. Never log that field or reuse it in a log line. Evidence:
