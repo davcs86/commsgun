@@ -11,9 +11,7 @@ _None open._
 
 ## Latent bugs (looks broken, not merely non-obvious)
 
-| Issue | Impact | Evidence |
-|---|---|---|
-| UI size limits live outside the UI constants files (`env.ts` `MIN_*`, `probe.ts` `PROBE_KEY` 64, `PROVIDER_NAME` 32) | Drift from their API twins is harder to spot (CG-02) | `ui/src/lib/server/env.ts#MIN_ADMIN_API_TOKEN`, `ui/src/lib/probe.ts#PROBE_KEY` |
+_None open._
 
 ## Dead / orphaned code
 
@@ -21,13 +19,7 @@ _None._
 
 ## Open questions (unresolved *why* — needs a maintainer)
 
-- `ui/src/lib/utils.ts` re-exports `cn` from the npm package `cn` (devDep `^0.5.2`), not shadcn's
-  `clsx` + `tailwind-merge`. Does it do the Tailwind conflict merging the generated `components/ui/**` relies on?
-  Status: **open**.
-- `ui/src/lib/server/session.ts#verifySession` re-encodes the signature and compares it to the input before
-  `timingSafeEqual`. Is that meant to reject malleable base64url? Status: **open**.
-- The login cookie is set `secure: true` while e2e runs on plain-http 127.0.0.1, relying on Chromium treating
-  loopback as a secure context. Intended? Status: **open**.
+_None open._
 
 ## Dismissed (won't fix)
 
@@ -43,6 +35,10 @@ _None._
 | `e2e/login.spec.ts` hardcodes `'commsgun_session'` | `ui/e2e/login.spec.ts` | 2026-11-15 | Imports `SESSION_COOKIE` from `src/lib/server/constants.js`; login specs pass |
 | The stub's `ENDPOINTS` excludes `probes` and `messages/<id>` | `ui/e2e/stub-api.ts#ENDPOINTS` | 2026-11-15 | Added `message` (`messages/<id>`) and `probes` (GET and POST); `messages` no longer also fails the detail. New e2e: "with only the detail endpoint down…" (`messages.spec.ts`) and "with only probes down…" (`probe.spec.ts`) pass |
 | `engines` `node >=22` and `@types/node ^22` vs Node 24 in the image and CI | `ui/package.json`, `ui/Dockerfile` | 2026-11-15 | `engines.node >=24`, `@types/node ^24` (24.19.2). Full UI pipeline green on Node 24.22.3; with `engine-strict=true` Node 22 now refuses `pnpm install` |
+| UI size limits lived outside the UI constants files (`env.ts` `MIN_*`, `probe.ts` `PROBE_KEY` 64, `PROVIDER_NAME` 32) | `ui/src/lib/server/env.ts`, `ui/src/lib/probe.ts` | 2026-11-15 | Moved unchanged: `MIN_ADMIN_PASSWORD`/`MIN_SESSION_SECRET`/`MIN_ADMIN_API_TOKEN` to `ui/src/lib/server/constants.ts`, `PROBE_KEY`/`PROVIDER_NAME` to `ui/src/lib/constants.ts`; CG-02 evidence updated. `api.ts#MESSAGE_ID` (same 64-char alphabet, CG-05) left in place (out of scope for this change). UI pipeline green |
+| Open question: does the npm `cn` (`^0.5.2`) do the Tailwind conflict merging `components/ui/**` relies on? | `ui/src/lib/utils.ts` | 2026-11-15 | Yes. It is shadcn's drop-in `clsx` + `tailwind-merge` replacement (package README); in Node, `cn('px-2 py-1','px-4')` → `py-1 px-4`, `cn('bg-red-500','bg-blue-500')` → `bg-blue-500`, `cn('text-sm text-muted-foreground','text-lg')` → `text-muted-foreground text-lg` |
+| Open question: is the re-encode compare in `verifySession` meant to reject malleable base64url? | `ui/src/lib/server/session.ts#verifySession` | 2026-11-15 | Yes, and it is load-bearing: Node's lenient `base64url` decode maps a flipped unused last-char bit, a trailing `=` and an injected `!` to the same 32 bytes, so without it several cookie strings would verify for one signature. Already pinned by `session.test.ts` (`'non-canonical signature'` case): deleting the line fails that test |
+| Open question: is `secure: true` on the login cookie intended while e2e runs on plain-http 127.0.0.1? | `ui/src/routes/login/+page.server.ts`, `ui/playwright.config.ts` | 2026-11-15 | Intended: spec §7.2 requires `Secure`, and `e2e/login.spec.ts` ("set a hardened cookie") asserts `secure: true`. It works over http because Chromium treats 127.0.0.1 as a secure context. Moving e2e off loopback or off Chromium would break login tests, not production (Caddy serves https) |
 
 ---
 _Surfaced by [context-forge](https://github.com/davcs86/agent-plugins). Open items above are defects to

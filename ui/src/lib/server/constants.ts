@@ -5,3 +5,6 @@ export const LOGIN_WINDOW_MS = 60 * 1000;
 export const ADMIN_USERNAME = 'admin';
 export const LOGIN_LIMITER_MAX_KEYS = 10_000;
 export const SESSION_KEY_LABEL = 'commsgun-session-key';
+export const MIN_ADMIN_PASSWORD = 16;
+export const MIN_SESSION_SECRET = 32;
+export const MIN_ADMIN_API_TOKEN = 32;
