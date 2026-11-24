@@ -156,7 +156,9 @@ At ≤ 100 emails/day the polling load is negligible.
     server-side sessions; the SOPS password is imported once (section 12).
 18. Alerting: Gatus health checks that fail on a stuck queue; no per-message alert.
 19. Hostnames: `comms.ts.<domain>` (enqueue) and `commsgun.ts.<domain>` (dashboard). Amended 2026-11-24: the
-    dashboard moves to `commsgun.public.<domain>` and its private name is removed (homelab-edge SSO spec § 5).
+    dashboard moves to `commsgun.public.<domain>` and its private name is removed (homelab-edge SSO spec § 5). The
+    edge has since moved both names to `*.private`: `comms.private.<domain>` and `commsgun.private.<domain>`
+    (homelab-edge `inventories/prod/group_vars/all/main.yml`); the `.ts` names below are historical.
 20. Images are public on GHCR; the owner merges PRs and runs deploys.
 
 ## 6. The API and worker (`api/`, image `ghcr.io/davcs86/commsgun-api`)
@@ -635,7 +637,7 @@ Every user keeps a local password (break-glass). Passwords: 16 characters (the `
 `Argon2Time` 2, `Argon2Threads` 1 in `constants.go`), stored as a PHC string so old hashes still verify after a
 parameter change **(call)**. At most one hash runs at a time (`PasswordHashConcurrency` 1); the others wait within
 their request's context **(call)**. Smoke covers the ceiling: it runs the API container with `--memory 96m`, the
-edge's `mem_limit` (today 256m; `scripts/smoke.sh` and CG-06 change in the build PR), and its UI login now verifies
+edge's `mem_limit` (smoke runs at 256m today; `scripts/smoke.sh` and CG-06 change in the build PR), and its UI login now verifies
 through `POST /admin/v1/sessions/local` after the start-up import has hashed once, so a hash over the edge's limit is
 an OOM kill that fails the login and every later check **(call)**. The `api memory` check (60 MiB, 7.6) stays a
 steady-state reading, not the peak. If smoke fails, the parameters go down; raising a ceiling is an owner decision. A
@@ -738,7 +740,8 @@ and logout are the dashboard's only writes besides the probe (section 2 amended)
   `POST /admin/v1/bootstrap/import` with username `admin`, which creates that user only while `users` is empty and
   answers `imported` or `skipped` **(call)**. `init` awaits the import, retrying while the API is unreachable or
   answers 5xx; a 401 (`unauthorized`: the `ADMIN_API_TOKEN`s differ) or a 422 (`invalid_password`) makes `init` throw,
-  so the UI refuses to start and the misconfiguration is loud **(call)**. The UI's `/healthz` does not answer 200 until
+  so the UI refuses to start and the misconfiguration is loud; any other non-200 answer also makes `init` throw
+  **(call)**. The UI's `/healthz` does not answer 200 until
   the import has finished (U1 amended), so smoke's `wait_ok "ui healthz"` and the edge's
   healthcheck gate the first login on it. `ADMIN_PASSWORD` is optional: absent, no import; present, still at least 16
   characters or the UI refuses to start. After a `skipped`, the UI logs once that `ADMIN_PASSWORD` is ignored; the
@@ -831,7 +834,7 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
   | Malformed `RCPT TO` address | `553 5.1.3` |
   | An 11th `RCPT TO` | `452 4.5.3` |
   | `DATA` over `SIZE` | `552 5.3.4` |
-  | Unsupported content, no `Message-ID`, a bad `Reply-To`, a refused subject (CR/LF, over 998), `body_required` (an empty part), `idempotency_conflict` (same `Message-ID`, other content) | `554 5.6.0` |
+  | Unsupported content, no `Message-ID`, a bad `Reply-To`, a refused subject (CR/LF, over 998), `body_required` (no non-empty part), `idempotency_conflict` (same `Message-ID`, other content) | `554 5.6.0` |
   | `rate_limited` | `451 4.7.1` |
   | The enqueue path's 503 (queue full, too many in flight, store busy), or over the SMTP session cap | `451 4.3.2` |
   | Any other enqueue failure (`invalid_json`, `unknown_field`: the listener built a bad request) | `451 4.3.0`, logged as a defect |
