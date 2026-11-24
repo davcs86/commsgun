@@ -30,9 +30,9 @@
 | # | Contract | Value |
 |---|---|---|
 | U1 | Dashboard listener | container port `9202`; `GET /healthz` unauthenticated → 200 `{"status":"ok"}` |
-| U2 | Env | `ADMIN_PASSWORD` (≥16 chars), `SESSION_SECRET` (≥32), `ADMIN_API_TOKEN` (≥32), `API_BASE_URL`, `ORIGIN`, `PORT` (default 9202). Amended during execution: the image itself sets `PROTOCOL_HEADER=x-forwarded-proto`, `HOST_HEADER=x-forwarded-host`, `ADDRESS_HEADER=x-forwarded-for`, `XFF_DEPTH=1` (adapter-node 6 ignores `ORIGIN`; the server compares the derived origin with `ORIGIN`). The reverse proxy must send those three headers |
+| U2 | Env | `ADMIN_PASSWORD` (≥16 chars), `SESSION_SECRET` (≥32), `ADMIN_API_TOKEN` (≥32), `API_BASE_URL`, `ORIGIN`, `PORT` (default 9202). Amended during execution: the image itself sets `PROTOCOL_HEADER=x-forwarded-proto`, `HOST_HEADER=x-forwarded-host`, `ADDRESS_HEADER=x-forwarded-for`, `XFF_DEPTH=1` (adapter-node 6 ignores `ORIGIN`; the server compares the derived origin with `ORIGIN`). The reverse proxy must send those three headers. Amended 2026-11-24 (spec 12.9, not built): `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_SCOPES` (all or none); `ADMIN_PASSWORD` becomes import-only; `ORIGIN` `https://commsgun.public.<domain>` |
 | U3 | Images | `ghcr.io/davcs86/commsgun-api` and `ghcr.io/davcs86/commsgun-ui`, tags `<git sha>` and `main`, label `org.opencontainers.image.revision=<git sha>` on both |
-| U4 | Session cookie | name `commsgun_session`; `HttpOnly; Secure; SameSite=Strict; Path=/`; lifetime 12 h |
+| U4 | Session cookie | name `commsgun_session`; `HttpOnly; Secure; SameSite=Strict; Path=/`; lifetime 12 h. Amended 2026-11-24 (spec 12.6, not built): holds an opaque server-side session token, revocable; transaction cookie `commsgun_oidc` (`SameSite=Lax; Path=/auth`, 10 min); routes `/login/sso`, `/auth/callback`, `/account` |
 
 ## Review Focus
 

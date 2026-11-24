@@ -29,11 +29,12 @@
 | # | Contract | Value |
 |---|---|---|
 | K1 | Enqueue listener | container port `9200`: `POST /v1/messages`, `GET /healthz`, `GET /healthz/backlog` |
-| K2 | Admin listener | container port `9201`: `GET /admin/v1/{stats,messages,messages/{id},facets,overview}`, `GET /healthz`; `Authorization: Bearer <ADMIN_API_TOKEN>`. Amended (`2026-11-13-hello-world-probe-design.md`): `GET, POST /admin/v1/probes`, the only admin path that accepts a write |
-| K3 | Env | `COMMSGUN_CONFIG` (JSON, below), `RESEND_API_KEY`, `ADMIN_API_TOKEN`, `DATA_DIR` (default `/data`), `COMMSGUN_ALLOW_FAKE` |
+| K2 | Admin listener | container port `9201`: `GET /admin/v1/{stats,messages,messages/{id},facets,overview}`, `GET /healthz`; `Authorization: Bearer <ADMIN_API_TOKEN>`. Amended (`2026-11-13-hello-world-probe-design.md`): `GET, POST /admin/v1/probes`, the only admin path that accepts a write. Amended 2026-11-24 (spec 12.7, not built): the account routes `GET /admin/v1/auth`, `POST /admin/v1/sessions/{local,oidc,reauth}`, `GET, DELETE /admin/v1/session`, `POST /admin/v1/identities`, `POST /admin/v1/bootstrap/import`; read routes also need `Commsgun-Session`; bind address `ADMIN_ADDR` |
+| K3 | Env | `COMMSGUN_CONFIG` (JSON, below), `RESEND_API_KEY`, `ADMIN_API_TOKEN`, `DATA_DIR` (default `/data`), `COMMSGUN_ALLOW_FAKE`. Amended 2026-11-24 (spec 12.9, not built): `AUTH_MODE`, `ENQUEUE_ADDR`, `ADMIN_ADDR`, `SMTP_ADDR`, `SMTP_TLS_CERT`, `SMTP_TLS_KEY`; per app `smtp_submission`, `send_window_seconds` |
 | K4 | Enqueue request/response | spec 6.2, verbatim |
 | K5 | Body cap | 262144 bytes |
 | K6 | Client address | first address of `X-Forwarded-For` is stored as `source_ip` |
+| K7 | SMTP submission (amended 2026-11-24, spec 12.8, not built) | container port `9203` on `SMTP_ADDR`, off by default; STARTTLS required; `AUTH PLAIN` as an app with `smtp_submission`; reply codes of spec 12.8 |
 
 `COMMSGUN_CONFIG`:
 

@@ -3,6 +3,11 @@
 Status: **approved by the owner** (2026-11-13), including the 24-hour send deadline (6.4). The limits in
 section 9 are still to be confirmed before the first deploy. Plans: `docs/superpowers/plans/`.
 
+Amended 2026-11-24 for single sign-on and the Authelia mail path (sections 12 and 13): **specified, not built.** The
+shared design is `davcs86/homelab-edge` `docs/superpowers/specs/2026-11-23-authelia-sso-respec.md` (decisions 4–9, 22,
+23; § 3 app contract; § 5; § 9; phase P5). Until an image with section 12 ships and the edge sets `AUTH_MODE`, the hub
+behaves as sections 1–11 describe, except that the admin's password moves into the API's store on first start (12.6).
+
 Items marked **(call)** are the designer's choices, not owner decisions — correct any of them.
 Items marked **(owner)** were decided by the owner in the design conversation.
 
@@ -38,14 +43,17 @@ manual deploy there.
 
 - A status endpoint or callbacks to subscribers: enqueue is fire-and-forget **(owner)**.
 - Dashboard actions (retry, cancel, edit) **(owner)**. Amended: the one exception is the hello-world
-  probe, `2026-11-13-hello-world-probe-design.md` **(owner)**.
+  probe, `2026-11-13-hello-world-probe-design.md` **(owner)**. Amended 2026-11-24: plus linking an SSO identity
+  to one's own account and logging out (12.5).
 - Attachments, cc/bcc, templates, scheduled sends.
-- Public ingress of any kind, including provider webhooks.
+- Public ingress of any kind, including provider webhooks. Amended 2026-11-24: the dashboard alone becomes public at
+  `commsgun.public.<domain>` behind single sign-on (section 12); enqueue, admin API and SMTP stay private.
 - A staging route. Port 8443 is being removed from the edge **(owner)** and the staging VM is denied
   on `*.ts:443`; staging gets access as part of the post-launch `xstockstrat-notify` work, on
   whatever route replaces 8443.
 - Connecting `xstockstrat-notify`. That is post-launch **(owner)**, through that repo's SDD pipeline.
-- Multiple dashboard users, roles, password change in the UI.
+- ~~Multiple dashboard users, roles,~~ password change in the UI. Amended 2026-11-24: the API stores users with a
+  role (only `admin` exists) and their identities (12.1); users are created, reset, disabled and unlinked by a CLI only.
 - OpenTelemetry, nightly backup of the store, inbound email/SMS.
 
 **Anti-goals** — the design has failed if any of these happen, even if everything else works
@@ -53,7 +61,11 @@ manual deploy there.
 - A message is sent twice because of a retry, a crash or a duplicate enqueue.
 - An accepted message disappears without a recorded final state.
 - A secret, a message body or a recipient address appears in a log.
-- The enqueue endpoint or the dashboard is reachable from the internet.
+- The enqueue endpoint, the admin API or the SMTP listener is reachable from the internet, or the dashboard is
+  reachable from it other than through single sign-on or, in `local`/`both`, the rate-limited password login
+  (amended 2026-11-24).
+- A disabled user, an unlinked SSO identity or a person outside the IdP's `commsgun` group reaches a dashboard page.
+- A password-reset or enrolment email from app `authelia` keeps its body after the link expires (1 hour).
 - The hub burns through the Resend free quota (100 emails/day) and keeps hammering the API.
 
 ## 3. Constraints found in the code
@@ -137,9 +149,11 @@ At ≤ 100 emails/day the polling load is negligible.
 16. Dashboard: stats, charts, message list with per-attempt error detail; no actions. Amended: one
     action, the hello-world probe sent as app `ops`.
 17. Login: fixed username `admin`, password from SOPS, session cookie. Times in the browser's
-    timezone, UTC as the default.
+    timezone, UTC as the default. Amended 2026-11-24: users in the API's store, `AUTH_MODE` `local` | `oidc` | `both`,
+    server-side sessions; the SOPS password is imported once (section 12).
 18. Alerting: Gatus health checks that fail on a stuck queue; no per-message alert.
-19. Hostnames: `comms.ts.<domain>` (enqueue) and `commsgun.ts.<domain>` (dashboard).
+19. Hostnames: `comms.ts.<domain>` (enqueue) and `commsgun.ts.<domain>` (dashboard). Amended 2026-11-24: the
+    dashboard moves to `commsgun.public.<domain>` and its private name is removed (homelab-edge SSO spec § 5).
 20. Images are public on GHCR; the owner merges PRs and runs deploys.
 
 ## 6. The API and worker (`api/`, image `ghcr.io/davcs86/commsgun-api`)
@@ -152,10 +166,13 @@ cannot expose the wrong surface:
 | Listener | Container port | Serves | Reachable from |
 |---|---|---|---|
 | Enqueue | 9200 | `POST /v1/messages`, `GET /healthz`, `GET /healthz/backlog` | Caddy (tailnet-only route), Gatus |
-| Admin | 9201 | `GET /admin/v1/*`, `POST /admin/v1/probes`, `GET /healthz` | the dashboard container only (compose network; never published to the host) |
+| Admin | 9201 | `GET /admin/v1/*`, `POST /admin/v1/probes`, `GET /healthz`; the account routes of 12.7 (amended) | the dashboard container only (compose network; never published to the host) |
+| SMTP submission (amended 2026-11-24) | 9203 | ESMTP with STARTTLS (12.8); off unless `SMTP_ADDR` is set | Authelia only (network `authelia-smtp`) |
 
 SQLite through a pure-Go driver (`modernc.org/sqlite`), so the binary is static and the runtime
-image is distroless **(call)**. One process owns the database; the dashboard never opens it.
+image is distroless **(call)**. One process owns the database; the dashboard never opens it. Amended 2026-11-24: the
+admin CLI of 12.6 is a short-lived second process on the same volume (`docker compose run --rm`); it writes through the
+same single-writer shape (API-03) and the running process treats its lock as `ErrBusy`.
 
 ### 6.2 Enqueue contract
 
@@ -393,6 +410,8 @@ Mobile-first: every page is designed at phone width first and widens to a table/
 
 ### 7.2 Login
 
+Amended 2026-11-24: replaced by section 12 once built. Until then, as below.
+
 - One user, `admin`. The password is the `ADMIN_PASSWORD` env var, compared in constant time.
 - Success sets a signed session cookie (`HttpOnly`, `Secure`, `SameSite=Strict`), valid 12 hours
   **(call)**. Logout clears it. **(Amended in the final review:)** the signing key is
@@ -589,3 +608,176 @@ short runbook: add a subscriber app, rotate an app key, change limits, configure
 - Exact pinned versions of Go, Node, SvelteKit, shadcn-svelte and base images (newest stable, at
   least two weeks old, pinned by digest/lockfile).
 - The Resend `last_event` vocabulary mapping (6.5), confirmed against current documentation.
+
+## 12. Single sign-on, accounts and the Authelia mail path (amended 2026-11-24, not built)
+
+Implements the shared app contract (homelab-edge SSO spec § 3) for commsgun. commsgun stays a provider-neutral OIDC
+client: nothing here names Authelia, and a fork runs with `AUTH_MODE=local` and no IdP.
+
+### 12.1 Store
+
+A forward-only migration mechanism lands first (API-02: today's `initSchema` refuses any schema change); migrations are
+embedded, applied at start, never reverted, so an image is never rolled back past one **(call)**. New tables:
+
+| Table | Columns |
+|---|---|
+| `users` | id (UUID), `username` (3–32 of `a-z0-9._-`, unique, permanent, never reused), `role` (`admin`, the only value), `password_hash` (argon2id), `disabled`, created/updated |
+| `identities` | `user_id`, `issuer`, `subject`, created; unique on `(issuer, subject)`, at most one per user and issuer **(call)** |
+| `sessions` | SHA-256 of a 32-byte random token, `user_id`, `kind` (`local` \| `oidc`), created, `expires_at`, `reauth_at` (12.5) |
+
+Every user keeps a local password (break-glass). Passwords: at least 16 characters (the `ADMIN_PASSWORD` minimum,
+CG-02), argon2id **(call)**.
+
+### 12.2 Modes
+
+`AUTH_MODE` is read by the **API**, which is the authority **(call)**: `local` (default) = password only; `oidc` = SSO
+only; `both` = SSO and password on one login page. The API refuses a session request whose kind the mode does not
+allow (403 `mode`), so a UI bug cannot reopen password logins. The UI reads the mode from `GET /admin/v1/auth` on each
+login-page render. In `both` the password login keeps working while the issuer is unreachable. Switching mode needs no
+login: change the API's env on the edge and deploy.
+
+The UI holds the relying-party settings: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_SCOPES` (default
+`openid profile email`), all set or all unset. With the mode at `oidc`/`both` and them unset, the login page says SSO is
+not configured and logs it once. `OIDC_AUTO_PROVISION` is **not** implemented: commsgun has one role, so every
+provisioned user would be an admin; the variable, if set, is refused at start **(call: a deliberate deviation from the
+shared contract's config list)**.
+
+### 12.3 Password login
+
+`POST /login` (UI) → `POST /admin/v1/sessions/local {username, password}` → 201 `{token, user}`, or 401
+`{"error": "unauthorized"}` for every cause (unknown user, wrong password, disabled), or 403 `mode`. The UI's limiter
+(7.2: 5 per minute per address) stays; Caddy's `commsgun_login` zones sit in front (homelab-edge SSO spec § 4.3).
+
+### 12.4 SSO login
+
+1. `GET /login/sso` (UI): authorization code flow with PKCE (S256), `state` and `nonce`, kept in a transaction cookie
+   `commsgun_oidc` (`HttpOnly; Secure; SameSite=Lax; Path=/auth`; 10 minutes; sealed with `SESSION_SECRET`) **(call)**.
+2. `GET /auth/callback` (UI): checks `state`, exchanges the code (`client_secret_basic`), validates the ID token
+   (`alg` RS256 from the issuer's JWKS, `iss`, `aud`, `exp`, `nonce`), clears the transaction cookie.
+3. `POST /admin/v1/sessions/oidc {iss, sub}` → 201 `{token, user}`, or 403 `not_linked` (no identity, or the user is
+   disabled: one answer) **(call)**, or 403 `mode`. Email and name are not sent: commsgun stores neither.
+
+The relying party is `openid-client` (exact pin, like CG-04) **(call)**. Group gating (`commsgun`) is the IdP's job
+(SSO spec decision 6); commsgun does not read groups. The conformance cases of the SSO spec § 3 (bad `state`, wrong
+`iss`/`aud`, expired token, unlinked `sub`, replayed code, link while another IdP session is live) are UI tests against
+a stub issuer.
+
+### 12.5 Link SSO
+
+Only in `both`, only for a session of kind `local`, on a new page `/account`:
+
+1. The user re-enters their password: `POST /admin/v1/sessions/reauth` sets `reauth_at`; a link must complete within 5
+   minutes of it **(call)**.
+2. The UI starts 12.4 with `prompt=login` (SSO spec S17); the transaction cookie also binds the session token's hash
+   and the purpose `link`, so a callback cannot link to a different session.
+3. The callback shows "You are linking <preferred_username> to <username>" with Confirm and Cancel; Confirm (a POST,
+   same-origin) calls `POST /admin/v1/identities {iss, sub}` with the session → 201; 409 `already_linked` if the
+   pair belongs to anyone, or the user already has an identity for that issuer; 403 `reauth_required` after 5 minutes.
+
+Unlinking is CLI-only (12.6). This page and logout are the dashboard's only writes besides the probe (section 2
+amended).
+
+### 12.6 Sessions, bootstrap and break-glass
+
+- **Sessions (U4 amended).** `commsgun_session` keeps its name and attributes (`HttpOnly; Secure; SameSite=Strict;
+  Path=/`) and its 12-hour fixed lifetime, but now holds the opaque token. The UI's hook validates it on every
+  request with `GET /admin/v1/session`; logout calls `DELETE /admin/v1/session`. Disabling a user, a password reset
+  and an unlink delete that user's sessions in the same transaction. Changing `ADMIN_PASSWORD` or `SESSION_SECRET` no
+  longer signs anyone out.
+- **Import (upgrade safety).** Today only the UI holds `ADMIN_PASSWORD`, and the edge's bump bot changes digests only
+  (SSO spec F12). So the **UI** imports: at start, if `ADMIN_PASSWORD` is set, it calls `POST
+  /admin/v1/bootstrap/import {username: "admin", password}`, which creates user `admin` only while `users` is empty and
+  answers 200 `imported` or `skipped` **(call)**. The UI retries until the API answers. After a `skipped`, the UI logs
+  once that `ADMIN_PASSWORD` is ignored; the edge retires `commsgun_admin_password` in the cutover change.
+- **CLI** in the API binary, run as `docker compose run --rm -T commsgun-api admin <verb>` (EDGE-03 shape), password on
+  stdin, never in argv: `create <username>` (only while `users` is empty), `reset-password <username>`, `disable
+  <username>`, `enable <username>`, `unlink <username>` **(call: the last three serve offboarding and a lost link)**.
+
+### 12.7 Admin API additions (K2 amended)
+
+All behind `Authorization: Bearer <ADMIN_API_TOKEN>`; the session token travels in a `Commsgun-Session` header, never a
+query string **(call)**.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /admin/v1/auth` | `{mode}` |
+| `POST /admin/v1/sessions/local`, `POST /admin/v1/sessions/oidc` | Create a session (12.3, 12.4) |
+| `POST /admin/v1/sessions/reauth` | Re-authenticate before a link (12.5) |
+| `GET /admin/v1/session`, `DELETE /admin/v1/session` | Validate (returns `{user}`), log out |
+| `POST /admin/v1/identities` | Link (12.5) |
+| `POST /admin/v1/bootstrap/import` | One-time import (12.6) |
+
+The three hand-written copies of this JSON change together (CG-01). The read-only endpoints of 6.7 now also need a valid
+session header **(call)**, so the admin token alone no longer reads message data.
+
+### 12.8 SMTP submission listener for Authelia (K7)
+
+Authelia sends reset links and enrolment codes through it (SSO spec decision 23, § 9).
+
+- **Binding (owner, 2026-11-24).** Each listener's address is configurable: `ENQUEUE_ADDR` (default `:9200`),
+  `ADMIN_ADDR` (default `:9201`), `SMTP_ADDR` (default unset = listener off). The edge gives `commsgun-api` fixed IPv4
+  addresses on `commsgun` and `authelia-smtp` and binds enqueue and admin to the first, SMTP to the second, so Authelia
+  can reach port 9203 alone. Gatus (host networking) probes the SMTP address directly; no loopback publish. A new spike
+  item checks that the enqueue port's `127.0.0.1` publish still reaches the per-address bind (homelab-edge S26).
+- **TLS.** STARTTLS is required before `AUTH` or `MAIL` (else 530). Certificate and key from `SMTP_TLS_CERT` and
+  `SMTP_TLS_KEY` (PEM, secrets), issued by the edge-local CA that Authelia trusts; TLS 1.2 or later **(call)**.
+- **Auth.** `AUTH PLAIN` only: username = app id, password = that app's key (constant time), and only an app whose
+  `COMMSGUN_CONFIG` entry has `smtp_submission: true` **(call)**. Failures → 535, same reply for every cause.
+- **Mapping to the enqueue path** (6.2 validation, app limits and one message per recipient, unchanged):
+  envelope `MAIL FROM` must be one of the app's allowed senders, and a header `From` must carry the same address (its
+  display name is kept); `RCPT TO` 1–10; `DATA` at most K5 (`SIZE` advertised); `Subject` (RFC 2047 decoded); a
+  `text/plain` and/or `text/html` part, single or `multipart/alternative`; anything else (attachments, other parts) →
+  554. `Message-ID` is required; the idempotency key is `smtp-` + the first 64 hex characters of its SHA-256, so a
+  resend after a lost reply is a duplicate.
+- **Expiry.** A new per-app key `send_window_seconds` (default and maximum 86400, `MAX_SEND_WINDOW`) sets `expires_at`
+  for SMTP submissions; the edge sets 3600 for `authelia`, so its bodies (subject included, 6.4) are gone within the
+  link's hour whatever the outcome.
+- **Replies.** 250 queued or duplicate; 451 4.7.1 over an app limit; 451 4.3.2 queue full or over concurrency; 535; 550
+  sender not allowed; 553 bad recipient; 552 too large; 554 unsupported content. At most 8 concurrent sessions, 60 s
+  read timeout, 10 messages per connection **(call)**; all in `constants.go`.
+- **Logs** carry the session outcome, app, counts and the reply class only: never an address, subject, `Message-ID`
+  or body (Rule 4).
+- The SMTP server is `github.com/emersion/go-smtp` with `go-sasl`, pinned **(call: the only new Go dependencies)**.
+
+### 12.9 Configuration added (K3, U2 amended)
+
+| Container | Env var | Meaning |
+|---|---|---|
+| API | `AUTH_MODE` | 12.2; default `local` |
+| API | `ENQUEUE_ADDR`, `ADMIN_ADDR`, `SMTP_ADDR` | 12.8 |
+| API | `SMTP_TLS_CERT`, `SMTP_TLS_KEY` | PEM (secrets); required when `SMTP_ADDR` is set, refused otherwise |
+| UI | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (secret), `OIDC_SCOPES` | 12.2; all or none |
+| UI | `ADMIN_PASSWORD` | now import-only (12.6); optional once imported |
+| UI | `ORIGIN` | follows the hostname: `https://commsgun.public.<domain>` |
+
+`COMMSGUN_CONFIG` gains, per app, `smtp_submission` and `send_window_seconds` (CG-08: the edge and `api` change
+together).
+
+### 12.10 Tests the builder adds
+
+Every route of 12.7 and its refusals; `mode` refusals in each mode; the import's `imported`/`skipped` and its
+race-free single row; each CLI verb, including `disable` and `reset-password` deleting sessions; the link flow's
+re-auth window, session binding, `already_linked` and confirmation; the conformance cases (12.4); the SMTP listener
+against a TLS client with a test CA: STARTTLS required, 535 for every bad credential, each reply code of 12.8, a
+duplicate `Message-ID`, the 1-hour window and body deletion at expiry; a migration from today's schema; logs with no
+address, subject, token or password.
+
+## 13. Threat model (draft, pending owner review before P5)
+
+Required by the SSO spec § 3 before the dashboard goes public.
+
+| Surface | Exposure | Auth | Limits | Secrets in URLs and logs | Session | CSRF |
+|---|---|---|---|---|---|---|
+| Dashboard `commsgun.public.<domain>` | internet, through Caddy | SSO; password login only in `local`/`both` | Caddy `commsgun_login` and `_hourly` zones on `POST /login`; UI limiter 5/min/address | `code`/`state` in the callback query: Caddy drops query, `Referer`, `Location` from logs (SSO spec § 4.3); no token in any URL | opaque, server-side, 12 h fixed, deleted on logout, disable, reset, unlink | SvelteKit origin check on every POST (7.5); `SameSite=Strict` session; `state` + PKCE + `nonce` |
+| `/auth/callback` | internet | `state` bound to the transaction cookie; ID-token checks (12.4) | Caddy's per-IP zone for the site | as above | transaction cookie 10 min, `Lax`, `Path=/auth` | `state`; link purpose bound to the session hash |
+| Admin API 9201 | `commsgun` network only, address-bound (12.8) | bearer `ADMIN_API_TOKEN` + session header | none beyond the address bind **(call)** | session token in a header only | — | not browser-reachable |
+| Enqueue 9200 | tailnet only (`comms.ts`) | app id + key | app limits (6.3) | none | — | not browser-reachable |
+| SMTP 9203 | `authelia-smtp` network only, address-bound | STARTTLS, then AUTH PLAIN as app `authelia` | app limits 5/min, 30/day (edge); 8 sessions | reset links live only in bodies, deleted by expiry within 1 h | — | — |
+
+Residuals for the owner to accept or reject:
+
+1. While `both` is on, a password login is reachable from the internet (SSO spec decision 18).
+2. The `authelia_session` cookie is scoped to `public.<domain>`; the edge strips it before this upstream (SSO spec
+   § 4.3). If that strip is missing, commsgun still ignores the cookie.
+3. A compromised UI container holds `ADMIN_API_TOKEN` but needs a live session token for message data (12.7).
+4. Reset links rest in the API's SQLite for at most an hour, and in Resend's logs on their side.
