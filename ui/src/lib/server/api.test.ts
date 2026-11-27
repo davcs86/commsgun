@@ -401,7 +401,7 @@ describe('createApi', () => {
 			await login(() => json({ error: 'unauthorized' }, 401)),
 			await login(() => json({ error: 'invalid_credentials' }, 401)),
 			await login(() => json({ error: 'mode' }, 403)),
-			await login(() => json({ error: 'unavailable' }, 503)),
+			await login(() => new Response('<html>busy</html>', { status: 503 })),
 			await login(() => {
 				throw new TypeError('fetch failed');
 			})

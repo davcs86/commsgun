@@ -21,8 +21,17 @@ export type SessionCall = { method: string; session: string | null };
 
 export const SCENARIOS = ['normal', 'empty', 'down', 'hostile', 'mixed', 'auth', 'window'] as const;
 export type Scenario = (typeof SCENARIOS)[number];
-// `message` is the detail route `messages/<id>`; `probes` covers both GET and POST.
-export const ENDPOINTS = ['stats', 'overview', 'facets', 'messages', 'message', 'probes'] as const;
+// `message` is the detail route `messages/<id>`; `probes` covers both GET and POST;
+// `session_check` is only GET session (the hook's lookup), so DELETE session still answers.
+export const ENDPOINTS = [
+	'stats',
+	'overview',
+	'facets',
+	'messages',
+	'message',
+	'probes',
+	'session_check'
+] as const;
 export type Endpoint = (typeof ENDPOINTS)[number];
 
 export const HOSTILE_RECIPIENT = '<script>alert(1)</script>@x.io';
@@ -415,7 +424,8 @@ async function readBody(req: IncomingMessage): Promise<string> {
 	return data;
 }
 
-function failKey(route: string): string {
+function failKey(route: string, method: string): string {
+	if (route === 'session' && method === 'GET') return 'session_check';
 	return route.startsWith('messages/') ? 'message' : route;
 }
 
@@ -469,7 +479,7 @@ async function handleApi(state: State, req: IncomingMessage, res: ServerResponse
 	if (route === 'session') {
 		state.sessionCalls.push({ method, session: typeof session === 'string' ? session : null });
 	}
-	if (state.scenario === 'down' || state.fail.includes(failKey(route))) {
+	if (state.scenario === 'down' || state.fail.includes(failKey(route, method))) {
 		req.socket.destroy();
 		return;
 	}

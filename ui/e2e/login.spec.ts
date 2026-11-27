@@ -153,6 +153,24 @@ const deletesCookie = (response: APIResponse) =>
 				/Max-Age=0/i.test(h.value)
 		);
 
+test('logout still revokes a well-formed cookie the hook could not validate', async ({
+	request,
+	baseURL
+}) => {
+	await setScenario('normal', ['session_check']);
+	const response = await request.post('/logout', {
+		headers: { cookie: `${SESSION_COOKIE}=${STUB_SESSION_TOKEN}`, origin: String(baseURL) },
+		maxRedirects: 0
+	});
+	expect(response.status()).toBe(303);
+	expect(response.headers()['location']).toBe('/login');
+	expect(deletesCookie(response)).toBe(true);
+	expect(await sessionCalls()).toEqual([
+		{ method: 'GET', session: STUB_SESSION_TOKEN },
+		{ method: 'DELETE', session: STUB_SESSION_TOKEN }
+	]);
+});
+
 // Review Focus 4: a malformed cookie is signed out without asking the API.
 for (const [name, value] of [
 	['empty', ''],

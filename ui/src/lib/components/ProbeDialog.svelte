@@ -91,7 +91,10 @@
 				body: JSON.stringify(input)
 			});
 			if (res.redirected) return location.reload();
-			result = res.ok ? ((await res.json()) as ProbeResult) : { kind: 'error' };
+			// A 503 here is the hook's: the session could not be checked because the API is down.
+			result = res.ok
+				? ((await res.json()) as ProbeResult)
+				: { kind: res.status === 503 ? 'unavailable' : 'error' };
 		} catch {
 			result = { kind: 'unavailable' };
 		} finally {

@@ -231,7 +231,10 @@ test('API down: the dialog says so, Retry recovers, and a failed send can be ret
 	await setScenario('normal');
 	await dialog(page).getByRole('button', { name: 'Retry' }).click();
 	await destination(page).fill('me@example.com');
-	// With the whole API down the hook answers 503 before /probe runs; here only the probe endpoint is.
+	await setScenario('down');
+	await sendButton(page).click();
+	await expect(dialog(page).getByRole('status')).toContainText('The API is unavailable.');
+	// Only the probe endpoint down: the hook passes and sendProbe itself reports unavailable.
 	await setScenario('normal', ['probes']);
 	await sendButton(page).click();
 	await expect(dialog(page).getByRole('status')).toContainText('The API is unavailable.');
