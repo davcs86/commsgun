@@ -1,7 +1,17 @@
 import { API_TIMEOUT_MS } from '../constants.js';
 import { toApiParams, type Filters } from '../filters.js';
 import type { ProbeInput, ProbeOptions, ProbeResult } from '../probe.js';
-import type { Facets, MessageDetail, MessagePage, Overview, Stats } from '../types.js';
+import type {
+	AuthMode,
+	Facets,
+	MessageDetail,
+	MessagePage,
+	Overview,
+	Session,
+	SessionInfo,
+	Stats
+} from '../types.js';
+import { SESSION_HEADER } from './constants.js';
 import type { Env } from './env.js';
 
 export type ApiResult<T> =
@@ -14,7 +24,18 @@ export type AccountResult<T> = { ok: true; data: T } | { ok: false; status: numb
 const MESSAGE_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 type Endpoint =
-	'stats' | 'messages' | 'message' | 'facets' | 'overview' | 'probe' | 'bootstrap_import';
+	| 'stats'
+	| 'messages'
+	| 'message'
+	| 'facets'
+	| 'overview'
+	| 'probe'
+	| 'bootstrap_import'
+	| 'auth'
+	| 'sessions_local'
+	| 'session';
+
+type Body = Record<string, unknown>;
 
 const isAbort = (e: unknown) =>
 	e instanceof Error && (e.name === 'AbortError' || e.name === 'TimeoutError');
@@ -24,8 +45,15 @@ function logFailure(endpoint: Endpoint, status: number | 'network' | 'timeout'):
 	console.error(JSON.stringify({ level: 'error', msg: 'admin api call failed', endpoint, status }));
 }
 
-export function createApi(env: Env, fetchFn: typeof fetch) {
+// `session` goes in a header on every call, never in a URL.
+export function createApi(env: Env, fetchFn: typeof fetch, session?: string) {
 	const base = env.apiBaseUrl.replace(/\/+$/, '');
+	const headers = (extra: Record<string, string> = {}): Record<string, string> => ({
+		authorization: `Bearer ${env.adminApiToken}`,
+		accept: 'application/json',
+		...(session === undefined ? {} : { [SESSION_HEADER]: session }),
+		...extra
+	});
 
 	async function call<T>(
 		endpoint: Endpoint,
@@ -36,7 +64,7 @@ export function createApi(env: Env, fetchFn: typeof fetch) {
 		let res: Response;
 		try {
 			res = await fetchFn(`${base}/admin/v1/${path}${query}`, {
-				headers: { authorization: `Bearer ${env.adminApiToken}`, accept: 'application/json' },
+				headers: headers(),
 				signal: AbortSignal.timeout(API_TIMEOUT_MS)
 			});
 		} catch (e) {
@@ -74,13 +102,11 @@ export function createApi(env: Env, fetchFn: typeof fetch) {
 		try {
 			res = await fetchFn(`${base}/admin/v1/probes`, {
 				method: 'POST',
-				headers: {
-					authorization: `Bearer ${env.adminApiToken}`,
-					accept: 'application/json',
+				headers: headers({
 					'content-type': 'application/json',
 					'idempotency-key': input.key,
 					'x-forwarded-for': clientAddress
-				},
+				}),
 				body: JSON.stringify({ channel: input.channel, to: input.to, provider: input.provider }),
 				signal: AbortSignal.timeout(API_TIMEOUT_MS)
 			});
@@ -117,45 +143,82 @@ export function createApi(env: Env, fetchFn: typeof fetch) {
 		return { kind: res.status === 503 ? 'unavailable' : 'error' };
 	}
 
-	async function bootstrapImport(
-		username: string,
-		password: string
-	): Promise<AccountResult<{ result: 'imported' | 'skipped' }>> {
+	// A success is `ok` with a body that passes `valid`; `error` is the API's code, `unavailable` for a 503.
+	async function account<T>(
+		endpoint: Endpoint,
+		method: string,
+		path: string,
+		ok: number,
+		valid: (body: Body) => boolean,
+		payload?: Body
+	): Promise<AccountResult<T>> {
 		let res: Response;
-		let body: Record<string, unknown> = {};
+		let body: Body = {};
 		try {
-			res = await fetchFn(`${base}/admin/v1/bootstrap/import`, {
-				method: 'POST',
-				headers: {
-					authorization: `Bearer ${env.adminApiToken}`,
-					accept: 'application/json',
-					'content-type': 'application/json'
-				},
-				body: JSON.stringify({ username, password }),
+			res = await fetchFn(`${base}/admin/v1/${path}`, {
+				method,
+				headers: headers(payload ? { 'content-type': 'application/json' } : {}),
+				body: payload ? JSON.stringify(payload) : undefined,
 				signal: AbortSignal.timeout(API_TIMEOUT_MS)
 			});
-			const parsed: unknown = await res.json().catch((e: unknown) => {
-				if (isAbort(e)) throw e;
-				return {};
-			});
-			if (typeof parsed === 'object' && parsed !== null) body = parsed as Record<string, unknown>;
+			const parsed: unknown =
+				res.status === 204
+					? {}
+					: await res.json().catch((e: unknown) => {
+							if (isAbort(e)) throw e;
+							return null;
+						});
+			if (typeof parsed === 'object' && parsed !== null) body = parsed as Body;
 		} catch (e) {
-			logFailure('bootstrap_import', isAbort(e) ? 'timeout' : 'network');
+			logFailure(endpoint, isAbort(e) ? 'timeout' : 'network');
 			return { ok: false, status: 0, error: 'unavailable' };
 		}
-		if (res.status === 200 && (body.result === 'imported' || body.result === 'skipped')) {
-			return { ok: true, data: { result: body.result } };
+		if (res.status === ok && valid(body)) {
+			return { ok: true, data: (res.status === 204 ? null : body) as T };
 		}
-		logFailure('bootstrap_import', res.status);
-		return {
-			ok: false,
-			status: res.status,
-			error: typeof body.error === 'string' ? body.error : 'error'
-		};
+		logFailure(endpoint, res.status);
+		const error = res.status === 503 ? 'unavailable' : body.error;
+		return { ok: false, status: res.status, error: typeof error === 'string' ? error : 'error' };
 	}
 
+	const isUser = (u: unknown) => typeof u === 'object' && u !== null;
+	const always = () => true;
+
 	return {
-		bootstrapImport,
+		bootstrapImport: (username: string, password: string) =>
+			account<{ result: 'imported' | 'skipped' }>(
+				'bootstrap_import',
+				'POST',
+				'bootstrap/import',
+				200,
+				(b) => b.result === 'imported' || b.result === 'skipped',
+				{ username, password }
+			),
+		authMode: () =>
+			account<{ mode: AuthMode }>('auth', 'GET', 'auth', 200, (b) =>
+				['local', 'oidc', 'both'].includes(b.mode as string)
+			),
+		createLocalSession: (username: string, password: string) =>
+			account<Session>(
+				'sessions_local',
+				'POST',
+				'sessions/local',
+				201,
+				(b) => typeof b.token === 'string' && typeof b.expires_at === 'string' && isUser(b.user),
+				{ username, password }
+			),
+		session: () =>
+			account<SessionInfo>(
+				'session',
+				'GET',
+				'session',
+				200,
+				(b) =>
+					(b.kind === 'local' || b.kind === 'oidc') &&
+					typeof b.expires_at === 'string' &&
+					isUser(b.user)
+			),
+		deleteSession: () => account<null>('session', 'DELETE', 'session', 204, always),
 		probeOptions: () => call<ProbeOptions>('probe', 'probes'),
 		sendProbe,
 		stats: (f: Filters) => call<Stats>('stats', 'stats', toApiParams(f)),

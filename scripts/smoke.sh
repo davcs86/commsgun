@@ -251,4 +251,16 @@ echo "memory ui:  before api restart ${ui_mem_before} MiB, after ${ui_mem_after}
 if [ "$api_mem" -le "$API_MEM_LIMIT_MIB" ]; then pass "api memory"; else fail "api memory" "${api_mem} MiB"; fi
 if [ "$ui_mem" -le "$UI_MEM_LIMIT_MIB" ]; then pass "ui memory"; else fail "ui memory" "${ui_mem} MiB"; fi
 
+# The break-glass CLI shares the volume and uid, with no network; a disabled user's session ends at once.
+docker run --rm --network none --read-only --cap-drop ALL --user 10001:10001 -v "$VOLUME":/data \
+  "$API_IMAGE" admin disable admin >/dev/null || fail "cli disable admin" "exit $?"
+pass "cli disable admin exits 0"
+old_cookie=(-H "Cookie: commsgun_session=${SESSION}" -o /dev/null)
+code="$(ui_curl "${old_cookie[@]}" -w '%{http_code}' "$UI_URL/" || true)"
+location="$(ui_curl "${old_cookie[@]}" -w '%{redirect_url}' "$UI_URL/" || true)"
+case "$code $location" in
+  "303 "*/login*) pass "disabling a user ends their session" ;;
+  *) fail "disabling a user ends their session" "got $code to $location" ;;
+esac
+
 echo "smoke: ok"

@@ -28,6 +28,7 @@ const (
 	rcptA      = "alice-unique@rcpt.example"
 	rcptB      = "bob-unique@rcpt.example"
 	failedText = "provider-said-unique-9042"
+	adminPass  = "admin-password-unique-8823"
 )
 
 type lockedBuf struct {
@@ -68,6 +69,7 @@ type proc struct {
 	done       chan error
 	dir        string
 	stoppedErr error
+	session    string
 }
 
 func start(t *testing.T, wrap func(provider.Provider) provider.Provider) *proc {
@@ -148,9 +150,30 @@ func enqueueHeaders(idem string) map[string]string {
 	}
 }
 
+// login creates a user and a session through the admin API once (import, then sessions/local).
+func (p *proc) login(t *testing.T) string {
+	t.Helper()
+	if p.session != "" {
+		return p.session
+	}
+	bearer := map[string]string{"Authorization": "Bearer " + adminToken}
+	creds := `{"username":"admin","password":"` + adminPass + `"}`
+	if code, body := do(t, http.MethodPost, "http://"+p.adm+"/admin/v1/bootstrap/import", bearer, creds); code != http.StatusOK {
+		t.Fatalf("import: %d %s", code, body)
+	}
+	code, body := do(t, http.MethodPost, "http://"+p.adm+"/admin/v1/sessions/local", bearer, creds)
+	var ses struct{ Token string }
+	if code != http.StatusCreated || json.Unmarshal([]byte(body), &ses) != nil || ses.Token == "" {
+		t.Fatalf("sessions/local: %d %s", code, body)
+	}
+	p.session = ses.Token
+	return p.session
+}
+
 func (p *proc) adminMessages(t *testing.T) []model.Message {
 	t.Helper()
-	code, body := do(t, http.MethodGet, "http://"+p.adm+"/admin/v1/messages", map[string]string{"Authorization": "Bearer " + adminToken}, "")
+	hdr := map[string]string{"Authorization": "Bearer " + adminToken, "Commsgun-Session": p.login(t)}
+	code, body := do(t, http.MethodGet, "http://"+p.adm+"/admin/v1/messages", hdr, "")
 	if code != http.StatusOK {
 		t.Fatalf("admin messages: %d %s", code, body)
 	}
@@ -250,6 +273,7 @@ func TestLogsCarryNoSecretsOrAddresses(t *testing.T) {
 	for name, secret := range map[string]string{
 		"app key": appKey, "admin token": adminToken, "recipient A": rcptA, "recipient B": rcptB,
 		"sender": "alerts-unique@sender.example", "subject": subject, "text body": textBody, "provider text": failedText,
+		"admin password": adminPass, "session token": p.session,
 	} {
 		if strings.Contains(logs, secret) {
 			t.Errorf("log contains %s", name)

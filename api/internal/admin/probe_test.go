@@ -40,6 +40,7 @@ func probeConfig(withSMS bool) *config.Config {
 	}
 	return &config.Config{
 		AdminAPIToken: token,
+		AuthMode:      config.AuthLocal,
 		Apps:          map[string]config.App{"ops": {ID: "ops", Key: strings.Repeat("k", 32), Channels: chs}},
 		Providers:     map[model.Channel]*config.ProviderCfg{model.ChannelEmail: {Name: "resend", PerMinute: 60, PerDay: 100}},
 	}
@@ -53,7 +54,7 @@ func probeSetup(t *testing.T, cfg *config.Config) probeEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 	buf := &bytes.Buffer{}
-	return probeEnv{NewHandler(st, cfg, clock.NewFake(now), slog.New(slog.NewJSONHandler(buf, nil)), &fakeHasher{}), st, buf}
+	return probeEnv{withSession(t, NewHandler(st, cfg, clock.NewFake(now), slog.New(slog.NewJSONHandler(buf, nil)), &fakeHasher{})), st, buf}
 }
 
 func (e probeEnv) send(method, key, body string) *httptest.ResponseRecorder {

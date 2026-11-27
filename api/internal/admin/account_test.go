@@ -642,3 +642,37 @@ func TestSessionStoreFault(t *testing.T) {
 		expect(t, c.method+" "+c.path+" on a closed store", e.call(c.method, c.path, tok, c.body), 500, `{"error":"internal"}`)
 	}
 }
+
+// stats, messages, messages/x, facets, overview, GET+POST probes, session, sessions/reauth, identities:
+// no header → 401 {"error":"session"}; the four exempt routes answer without one
+func TestEveryRouteNeedsSessionButFour(t *testing.T) {
+	e := accountSetup(t, config.AuthBoth)
+	gated := []struct{ method, path, body string }{
+		{http.MethodGet, "/admin/v1/stats", ""}, {http.MethodGet, "/admin/v1/messages", ""},
+		{http.MethodGet, "/admin/v1/messages/x", ""}, {http.MethodGet, "/admin/v1/facets", ""},
+		{http.MethodGet, "/admin/v1/overview", ""}, {http.MethodGet, "/admin/v1/probes", ""},
+		{http.MethodPost, "/admin/v1/probes", `{"channel":"email","to":"me@example.com","provider":null}`},
+		{http.MethodGet, pathSession, ""}, {http.MethodPost, pathReauth, reauthBody(t, acctPass)},
+		{http.MethodPost, pathIdentity, identity(t, acctIss, acctSub)},
+	}
+	for _, c := range gated {
+		expect(t, c.method+" "+c.path+" without a session", e.call(c.method, c.path, "", c.body), 401, wantSession)
+		expect(t, c.method+" "+c.path+" with an unknown session", e.call(c.method, c.path, "unknown", c.body), 401, wantSession)
+	}
+	expect(t, "auth", e.call(http.MethodGet, pathAuth, "", ""), 200, `{"mode":"both"}`)
+	expect(t, "import", e.call(http.MethodPost, pathImport, "", creds(t, acctUser, acctPass)), 200, `{"result":"imported"}`)
+	if rec := e.call(http.MethodPost, pathLocal, "", creds(t, acctUser, acctPass)); rec.Code != http.StatusCreated {
+		t.Errorf("sessions/local without a session: %d %s", rec.Code, rec.Body)
+	}
+	expect(t, "sessions/oidc", e.call(http.MethodPost, pathOIDC, "", identity(t, acctIss, acctSub)), 403, `{"error":"not_linked"}`)
+	expect(t, "DELETE session", e.call(http.MethodDelete, pathSession, "", ""), 204, "")
+
+	tok := login(t, e, acctUser)
+	for _, p := range []string{"/admin/v1/stats", "/admin/v1/facets", "/admin/v1/overview", "/admin/v1/probes"} {
+		if rec := e.call(http.MethodGet, p, tok, ""); rec.Code != 200 {
+			t.Errorf("GET %s with a session: %d %s", p, rec.Code, rec.Body)
+		}
+	}
+	e.st.Close()
+	expect(t, "stats on a closed store", e.call(http.MethodGet, "/admin/v1/stats", tok, ""), 500, `{"error":"internal"}`)
+}

@@ -23,9 +23,12 @@ describe('loadEnv', () => {
 		expect(() => loadEnv({ ...valid, [key]: value })).toThrow(key);
 	});
 
-	it.each(Object.keys(valid))('rejects a missing %s', (key) => {
-		expect(() => loadEnv({ ...valid, [key]: undefined })).toThrow(key);
-	});
+	it.each(Object.keys(valid).filter((k) => k !== 'ADMIN_PASSWORD'))(
+		'rejects a missing %s',
+		(key) => {
+			expect(() => loadEnv({ ...valid, [key]: undefined })).toThrow(key);
+		}
+	);
 
 	it.each([
 		['ADMIN_PASSWORD', 'x'.repeat(15)],
@@ -44,6 +47,17 @@ describe('loadEnv', () => {
 		expect(message).not.toContain(value);
 	});
 
+	it('accepts an unset or empty ADMIN_PASSWORD as null; rejects 15 code points and "😀".repeat(15) (30 UTF-16 units); accepts "😀".repeat(16)', () => {
+		expect(loadEnv({ ...valid, ADMIN_PASSWORD: undefined }).adminPassword).toBeNull();
+		expect(loadEnv({ ...valid, ADMIN_PASSWORD: '' }).adminPassword).toBeNull();
+		expect(() => loadEnv({ ...valid, ADMIN_PASSWORD: 'x'.repeat(15) })).toThrow('ADMIN_PASSWORD');
+		expect('😀'.repeat(15).length).toBe(30);
+		expect(() => loadEnv({ ...valid, ADMIN_PASSWORD: '😀'.repeat(15) })).toThrow('ADMIN_PASSWORD');
+		expect(loadEnv({ ...valid, ADMIN_PASSWORD: '😀'.repeat(16) }).adminPassword).toBe(
+			'😀'.repeat(16)
+		);
+	});
+
 	it('accepts a valid environment', () => {
 		const env = loadEnv(valid);
 		expect(env.apiBaseUrl).toBe('http://api:9201');
@@ -51,6 +65,7 @@ describe('loadEnv', () => {
 		expect(env.sessionSecret).toBe(valid.SESSION_SECRET);
 		expect(env.adminApiToken).toBe(valid.ADMIN_API_TOKEN);
 		expect(env.origin).toBe(valid.ORIGIN);
+		expect(env).not.toHaveProperty('sessionKey');
 	});
 
 	it.each(['https://x.test/', 'https://x.test:443', 'https://x.test/some/path'])(

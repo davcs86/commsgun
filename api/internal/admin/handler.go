@@ -58,11 +58,15 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": errUnauth})
 		return
 	}
-	if rest == "probes" {
-		h.probes(w, r)
+	if h.account(w, r, rest) {
 		return
 	}
-	if h.account(w, r, rest) {
+	if _, _, err := h.session(r); err != nil {
+		h.sessionFail(w, r, err)
+		return
+	}
+	if rest == "probes" {
+		h.probes(w, r)
 		return
 	}
 	if r.Method != http.MethodGet {
