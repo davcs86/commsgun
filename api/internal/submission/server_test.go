@@ -339,6 +339,19 @@ func TestEnvelopeReplies(t *testing.T) {
 	}
 }
 
+// a DATA line over go-smtp's 2000-character limit → 554 5.6.0, nothing stored
+func TestDataLongLineRefused(t *testing.T) {
+	h := startServer(t)
+	c := h.authed(t, "authelia", appKey)
+	code, msg := c.send(envFrom, []string{rcpt}, message("<long@auth.example.com>", "Long")+strings.Repeat("x", 2100))
+	if code != 554 || !strings.HasPrefix(msg, "5.6.0 ") {
+		t.Fatalf("DATA: %d %q, want 554 5.6.0", code, msg)
+	}
+	if n := h.st.count(t, `SELECT COUNT(*) FROM messages`); n != 0 {
+		t.Fatalf("%d messages stored", n)
+	}
+}
+
 // real store: 250 2.0.0, one message per RCPT, request key "smtp/<hex>", expires_at = now+window
 func TestSubmitQueues(t *testing.T) {
 	h := startServer(t)

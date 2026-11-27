@@ -166,18 +166,22 @@ func runWith(ctx context.Context, getenv func(string) string, stdout io.Writer, 
 
 	sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), constants.ShutdownTimeout)
 	defer scancel()
+	smtpDone := make(chan error, 1)
+	if smtpSrv != nil {
+		// go-smtp waits for idle connections too, and Close after Shutdown is a no-op.
+		go func() { smtpDone <- smtpSrv.Shutdown(sctx) }()
+	} else {
+		smtpDone <- nil
+	}
 	for _, s := range []*http.Server{enqSrv, admSrv} {
 		if err := s.Shutdown(sctx); err != nil {
 			log.Warn("http shutdown timed out; closing open connections", "timeout_ms", constants.ShutdownTimeout.Milliseconds())
 			runErr = errors.Join(runErr, err, s.Close())
 		}
 	}
-	if smtpSrv != nil {
-		// go-smtp waits for idle connections too, and Close after Shutdown is a no-op.
-		if err := smtpSrv.Shutdown(sctx); err != nil {
-			log.Warn("smtp shutdown timed out", "timeout_ms", constants.ShutdownTimeout.Milliseconds())
-			runErr = errors.Join(runErr, err)
-		}
+	if err := <-smtpDone; err != nil {
+		log.Warn("smtp shutdown timed out", "timeout_ms", constants.ShutdownTimeout.Milliseconds())
+		runErr = errors.Join(runErr, err)
 	}
 	wg.Wait()
 	return runErr
