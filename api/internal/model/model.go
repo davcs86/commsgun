@@ -48,6 +48,13 @@ const (
 	ErrUnknown             ErrorType = "unknown"
 )
 
+type SessionKind string
+
+const (
+	KindLocal SessionKind = "local"
+	KindOIDC  SessionKind = "oidc"
+)
+
 type Outcome string
 
 const (

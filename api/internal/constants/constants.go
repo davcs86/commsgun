@@ -65,6 +65,14 @@ const (
 	PasswordHashConcurrency = 1
 	PasswordMinChars        = 16
 	PasswordMaxBytes        = 1024
+
+	UsernameMinLen          = 3
+	UsernameMaxLen          = 32
+	SessionTokenBytes       = 32
+	SessionTTL              = 12 * time.Hour
+	ReauthWindow            = 5 * time.Minute
+	ReauthMaxFailures       = 5
+	IdentitySubjectMaxBytes = 255
 )
 
 // BucketStep maps a stats range up to MaxRange onto a series bucket; the last step has no bound.
