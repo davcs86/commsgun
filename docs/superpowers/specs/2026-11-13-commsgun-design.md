@@ -714,7 +714,8 @@ Only in `both`, only for a session of kind `local`. The API enforces both on `PO
 
 1. **Re-auth.** The page's one form action, `POST /account`, takes the password and calls
    `POST /admin/v1/sessions/reauth`, which sets `reauth_at`; a wrong password counts towards `ReauthMaxFailures`
-   (12.3). On success the action starts 12.4 with purpose `link`, `prompt=login` and `max_age=0` (SSO spec S17, § 3
+   (12.3). On success the action starts 12.4 with purpose `link`, `prompt=login` and `max_age=1` (not `0`, which Authelia v4.39.28
+   refuses even after re-authentication: SSO spec S17) (SSO spec S17, § 3
    "Linking"; owner, 2026-11-27); the transaction cookie also holds the SHA-256 of the session token (the binding) and
    the account's username (for the confirmation page) **(call)**, beside the flow's start time (12.4). The link must be
    confirmed within 5 minutes of `reauth_at` (`ReauthWindow`) **(call)**.
@@ -888,7 +889,7 @@ sessions; the link flow's re-auth window, session binding at `POST /auth/link`, 
 session cookie (a cross-site IdP), `already_linked`, confirmation and cookie clearing; the login callback's 200 page
 continuing to `next`; the conformance cases (12.4), including a link whose ID token has no `auth_time` and one whose
 `auth_time` is more than 30 s before the flow's start (each refused at the callback, cookie cleared, no identity call;
-`prompt=login` and `max_age=0` on every link), and an ID token whose key-set fetch fails after the cached set aged out
+`prompt=login` and `max_age=1` on every link), and an ID token whose key-set fetch fails after the cached set aged out
 (the SSO attempt fails); the SMTP listener against a TLS client with a test CA: STARTTLS required, one reply for every
 bad credential, an `smtp_submission` app refused on HTTP enqueue, each row of the reply table, a duplicate `Message-ID`
 resent minutes later (still `250 2.0.0`), the 1-hour window and body deletion at expiry; a migration from today's

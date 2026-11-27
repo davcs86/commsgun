@@ -40,7 +40,7 @@ is the plan's proposal, not a decision.
   `commsgun_oidc` `HttpOnly; Secure; SameSite=Lax; Path=/auth`, 10 minutes, sealed with a key derived from
   `SESSION_SECRET` alone.
 - Re-auth: `ReauthWindow` 5 min, `ReauthMaxFailures` 5 per session. Identity: `iss` an `https` URL, `sub` 1–255 bytes.
-- Link (spec 12.5, owner 2026-11-27): every link sends `prompt=login` and `max_age=0`; the callback refuses an ID token
+- Link (spec 12.5, owner 2026-11-27): every link sends `prompt=login` and `max_age=1`; the callback refuses an ID token
   without `auth_time` or with `auth_time` before the flow's start minus `AUTH_TIME_SKEW_MS` (30 s).
 - SMTP: container port 9203 on `SMTP_ADDR`; STARTTLS, TLS 1.2+; `AUTH PLAIN` only, as an app with `smtp_submission: true`;
   8 concurrent sessions, 60 s read timeout, 10 messages per connection; `DATA` ≤ `MaxBodyBytes`;
@@ -512,7 +512,7 @@ it('accepts an unset or empty ADMIN_PASSWORD as null; rejects 15 characters');
   - `beginAuth(oidc: OidcEnv, input: { purpose; next; binding?; username? }, now: number, fetchFn?: typeof fetch):
     Promise<{ url: URL; tx: Transaction }>` — discovery on every call (no cache, so an issuer outage is seen at once),
     `id_token_signed_response_alg: 'RS256'`, `ClientSecretBasic`, `enableNonRepudiationChecks`, PKCE S256, `state`,
-    `nonce`, `redirect_uri` = `${origin}/auth/callback`, `started = now`, and `prompt=login` with `max_age=0` when
+    `nonce`, `redirect_uri` = `${origin}/auth/callback`, `started = now`, and `prompt=login` with `max_age=1` when
     `purpose === 'link'`.
     `completeAuth(oidc, tx, callbackUrl: URL, fetchFn?): Promise<{ ok: true; iss: string; sub: string;
     preferredUsername: string | null } | { ok: false; reason: 'state' | 'token' | 'unavailable' }>` — discovery on
@@ -543,7 +543,7 @@ it('defaults OIDC_SCOPES to "openid profile email"');
 // oidc-cookie.test.ts: round trip; one flipped byte → null; at exp → null; other key → null; '', 'x', 10 KB → null
 // oidc.test.ts — conformance (SSO spec § 3) against createIssuer('https://issuer.test') via fetchFn
 it('authorization URL: response_type=code, code_challenge_method=S256, state, nonce, scope, redirect_uri; no prompt or max_age for login');
-it('link purpose adds prompt=login and max_age=0; tx.started == now');
+it('link purpose adds prompt=login and max_age=1; tx.started == now');
 it('link: auth_time absent → { ok: false, reason: "token" }');            // conformance: missing auth_time on a link
 it('link: auth_time at started - 31 s → token; at started - 30 s → ok'); // conformance: stale auth_time on a link
 it('login: an absent or old auth_time is not checked');
@@ -609,7 +609,7 @@ it('bindingMatches is true only for the bound token');
 // e2e/account.spec.ts
 // mode both + local session: form shown; mode local, mode oidc, or an oidc-kind session: no form and a one-line reason
 // wrong password → "Incorrect password"; 5 failures share /login's budget: a 6th POST to /login or /account → 429
-// right password → IdP URL has prompt=login and max_age=0; with the stub issuer's live session set to another sub, the confirmation names
+// right password → IdP URL has prompt=login and max_age=1; with the stub issuer's live session set to another sub, the confirmation names
 //   the re-authenticated user, not the live one (conformance: link while another IdP session is live)
 // the callback request carried no commsgun_session (cross-site) and still rendered the confirmation
 // stub next({ auth_time: null }), and next({ auth_time: <2 min before the re-auth POST> }) → no confirmation, commsgun_oidc cleared, no identities call
@@ -769,7 +769,7 @@ Existing `main_test.go` helpers move from `run(…, enqAddr, admAddr)` to env va
 | Q4 | Gaps in the 12.8 reply table: `MAIL` after STARTTLS but before `AUTH`; the 11th message on one connection; more `RCPT`s than the app's `per_minute`/`per_day` (enqueue answers `too_many_recipients_for_limit`, which the table maps to `451 4.3.0` "defect") | `530 5.7.0` (RFC 4954); `451 4.3.2`; refuse at `RCPT` beyond `min(10, per_minute, per_day)` with `452 4.5.3` | Task 10, 11 |
 | Q5 | "16 characters": Go can count code points, but the UI's `loadEnv` counts UTF-16 units (`v.length`); a non-ASCII `ADMIN_PASSWORD` could pass the UI and fail the import | Both count code points (`[...v].length` in the UI) | Task 2, 7 |
 | Q6 | `openid-client` 6 refuses a non-`https` issuer unless `allowInsecureRequests` is set; the e2e stub issuer is plain HTTP | `loadEnv` accepts `http:` only for host `localhost`/`127.0.0.1`, and only then the RP sets `allowInsecureRequests`. Alternative: an HTTPS stub with a CA made by `openssl` at test start and `NODE_EXTRA_CA_CERTS` | Task 8 |
-| Q7 | Link re-auth: spec 12.5 sends `prompt=login`; SSO spec S17 pairs it with `max_age=0` and a fresh `auth_time` | **Resolved (owner, 2026-11-27; SSO spec § 3 "Linking"):** every link sends `prompt=login` and `max_age=0`; the callback refuses a missing `auth_time` or one before the flow's start minus `AUTH_TIME_SKEW_MS` (30 s), as a failed ID-token check (spec 12.5; Tasks 8, 9) | — |
+| Q7 | Link re-auth: spec 12.5 sends `prompt=login`; SSO spec S17 pairs it with `max_age=1` and a fresh `auth_time` | **Resolved (owner, 2026-11-27; SSO spec § 3 "Linking"):** every link sends `prompt=login` and `max_age=1`; the callback refuses a missing `auth_time` or one before the flow's start minus `AUTH_TIME_SKEW_MS` (30 s), as a failed ID-token check (spec 12.5; Tasks 8, 9) | — |
 | Q8 | § 13 is a draft pending owner review before P5; this plan builds what it states | Review § 13 (and its residuals 1–7) before P5 | P5, not a task |
 | Q9 | Resolved (2026-11-27, cross-repo check): openid-client 6 exports `setJwksCache`/`getJwksCache`, so the shared conformance case "an ID token on a key set older than 3600 s with the refresh failing" is tested as happybabytracker's plan does: a `deps.jwksCache` seam seeds a cache with a real `uat` of now − 301 s (past the library's 300 s refetch age) and the `jwks_uri` fetch fails → refused; now − 10 s passes. No fake clock | — | Task 8 |
 
