@@ -457,6 +457,8 @@ function handleAdmin(state: State, res: ServerResponse, url: URL, route: string)
 }
 
 // Mirrors the API: the bearer first, then the session on every route but these four.
+// The API's store.ValidUsername (CG-01).
+const USERNAME = /^[a-z0-9._-]{3,32}$/;
 const UNGATED = new Set(['auth', 'sessions/local', 'sessions/oidc', 'bootstrap/import']);
 
 async function sessionsLocal(state: State, req: IncomingMessage, res: ServerResponse) {
@@ -523,6 +525,9 @@ async function handleApi(state: State, req: IncomingMessage, res: ServerResponse
 	if (method === 'POST' && route === 'bootstrap/import') {
 		if (req.headers.authorization !== `Bearer ${STUB_TOKEN}`) return send(res, 401);
 		const body = JSON.parse((await readBody(req)) || '{}') as { username?: unknown };
+		if (typeof body.username !== 'string' || !USERNAME.test(body.username)) {
+			return send(res, 422, { error: 'invalid_username', field: 'username' });
+		}
 		const result = state.imports.length === 0 ? 'imported' : 'skipped';
 		state.imports.push({ username: String(body.username) });
 		return send(res, 200, { result });

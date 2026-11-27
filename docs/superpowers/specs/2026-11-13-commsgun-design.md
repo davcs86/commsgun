@@ -3,7 +3,7 @@
 Status: **approved by the owner** (2026-11-13), including the 24-hour send deadline (6.4). The limits in
 section 9 are still to be confirmed before the first deploy. Plans: `docs/superpowers/plans/`.
 
-Amended 2026-11-24 for single sign-on and the Authelia mail path (sections 12 and 13): **specified, not built.** The
+Amended 2026-11-24 for single sign-on and the Authelia mail path (sections 12 and 13): **built** (2026-11-27). The
 shared design is `davcs86/homelab-edge` `docs/superpowers/specs/2026-11-23-authelia-sso-respec.md` (decisions 4–7, 9,
 22, 23; § 3 app contract; § 5; § 9; phase P5). Until an image with section 12 ships and the edge sets `AUTH_MODE`, the
 hub behaves as sections 1–11 describe, except that the admin's password moves into the API's store on first start
@@ -615,14 +615,14 @@ short runbook: add a subscriber app, rotate an app key, change limits, configure
   least two weeks old, pinned by digest/lockfile).
 - The Resend `last_event` vocabulary mapping (6.5), confirmed against current documentation.
 
-## 12. Single sign-on, accounts and the Authelia mail path (amended 2026-11-24, not built)
+## 12. Single sign-on, accounts and the Authelia mail path (amended 2026-11-24, built)
 
 Implements the shared app contract (homelab-edge SSO spec § 3) for commsgun. commsgun stays a provider-neutral OIDC
 client: nothing here names Authelia, and a fork runs with `AUTH_MODE=local` and no IdP.
 
 ### 12.1 Store
 
-A forward-only migration mechanism lands first (API-02: today's `initSchema` refuses any schema change); migrations are
+A forward-only migration mechanism lands first (API-02: the old `initSchema` refused any schema change); migrations are
 embedded, applied at start, never reverted, so an image is never rolled back past one **(call)**. New tables:
 
 | Table | Columns |
@@ -639,7 +639,7 @@ the UI counts `[...v].length`, not UTF-16 units; owner, 2026-11-27) to 1024 byte
 `constants.go`; owner, 2026-11-27), stored as a PHC string so old hashes still verify after a
 parameter change **(call)**. At most one hash runs at a time (`PasswordHashConcurrency` 1); the others wait within
 their request's context **(call)**. Smoke covers the ceiling: it runs the API container with `--memory 96m`, the
-edge's `mem_limit` (smoke runs at 256m today; `scripts/smoke.sh` and CG-06 change in the build PR), and its UI login now verifies
+edge's `mem_limit` (it ran at 256m before this section was built), and its UI login now verifies
 through `POST /admin/v1/sessions/local` after the start-up import has hashed once, so a hash over the edge's limit is
 an OOM kill that fails the login and every later check **(call)**. The `api memory` check (60 MiB, 7.6) stays a
 steady-state reading, not the peak. If smoke fails, the parameters go down; raising a ceiling is an owner decision. A
@@ -696,7 +696,7 @@ The browser routes that accept a password are exactly `POST /login` and `POST /a
    link. That next step is a same-origin navigation, so it carries the `SameSite=Strict` session cookie whatever site
    the IdP is on; a 303 straight from the IdP's redirect would reach the hook without it **(call)**.
 
-The hook's public paths (`ui/src/hooks.server.ts#PUBLIC_PATHS`, today `/login`, `/logout`, `/healthz`) gain
+The hook's public paths (`ui/src/hooks.server.ts#PUBLIC_PATHS`, before this section `/login`, `/logout`, `/healthz`) gain
 `/login/sso` and `/auth/callback`; no callback reads the session, and a `link` is bound to its session only at
 `POST /auth/link` (12.5). `/account` and `/auth/link` need a session.
 
@@ -731,15 +731,15 @@ Only in `both`, only for a session of kind `local`. The API enforces both on `PO
    and original expiry, and answers 200 "You are linking <preferred_username> to <username>" with Confirm and Cancel.
    Both post to `POST /auth/link` (same-origin, so the session cookie is sent; under `Path=/auth`, so the transaction
    cookie is sent).
-3. **Confirm.** `POST /auth/link` checks the origin, and that the request's session token hashes to the binding, so a
-   link cannot reach a different session. Confirm calls `POST /admin/v1/identities
-   {iss, sub}` with the session → 204; 409 `already_linked` if the pair belongs to anyone, or the user already has an
-   identity for that issuer; 403 `reauth_required` after the window. Cancel calls nothing. Either way the transaction
-   cookie is cleared and the browser returns to `/account` with the outcome.
+3. **Confirm.** `POST /auth/link` checks the origin (a foreign `Origin` gets 403 and leaves the transaction cookie),
+   and that the request's session token hashes to the binding, so a link cannot reach a different session. Confirm
+   calls `POST /admin/v1/identities {iss, sub}` with the session → 204; 409 `already_linked` if the pair belongs to anyone, or the user already has an
+   identity for that issuer; 403 `reauth_required` after the window. Cancel calls nothing. Either way, once past the
+   origin check, the transaction cookie is cleared and the browser returns to `/account` with the outcome.
 
-So the transaction cookie is cleared at the callback for `login`, at `POST /auth/link` for `link`, and at the callback
-whenever a check fails; otherwise it expires after 10 minutes. Unlinking is CLI-only (12.6). `/account`, `/auth/link`
-and logout are the dashboard's only writes besides the probe (section 2 amended).
+So the transaction cookie is cleared at the callback for `login`, at `POST /auth/link` (always, once past the Origin
+check) for `link`, and at the callback whenever a check fails; otherwise it expires after 10 minutes. Unlinking is
+CLI-only (12.6). `/account`, `/auth/link` and logout are the dashboard's only writes besides the probe (section 2 amended).
 
 ### 12.6 Sessions, bootstrap and break-glass
 
@@ -777,7 +777,8 @@ All behind `Authorization: Bearer <ADMIN_API_TOKEN>`, checked first (401 `unauth
 answers 401 `invalid_credentials`, never `unauthorized` (12.3). The session token
 travels in a `Commsgun-Session` header, never a query string **(call)**. **Every** `/admin/v1/*` route needs a valid
 session, the probe's `GET` and `POST` included, except the four marked "no" below **(call)**; a missing, unknown,
-expired or mode-refused session → 401 `{"error": "session"}` (logout excepted: always 204). So the admin token alone
+expired or mode-refused session → 401 `{"error": "session"}` (logout excepted: 204); a store fault on the lookup
+answers 503/500 as any store fault, never 401 `session`. So the admin token alone
 no longer reads message data or sends a probe, though with a linked person's `(iss, sub)` it can mint a session
 (residual 3, § 13). (`/healthz` is outside `/admin/v1/` and unchanged.)
 
@@ -795,9 +796,9 @@ of its own beyond the body cap) **(call)**.
 | `GET /admin/v1/auth` | no | — | 200 `{"mode": "local" \| "oidc" \| "both"}` | — |
 | `POST /admin/v1/sessions/local` | no | `{"username", "password"}` | 201 `Session` | 401 `invalid_credentials` (every cause); 403 `mode` |
 | `POST /admin/v1/sessions/oidc` | no | `{"iss", "sub"}` | 201 `Session` | 403 `not_linked`; 403 `mode` |
-| `POST /admin/v1/bootstrap/import` | no | `{"username": "admin", "password"}` | 200 `{"result": "imported" \| "skipped"}` | 422 `invalid_password` (`field` `password`); the UI refuses to start on it or on 401 (12.6) |
+| `POST /admin/v1/bootstrap/import` | no | `{"username": "admin", "password"}` | 200 `{"result": "imported" \| "skipped"}` | 422 `invalid_password` (`field` `password`); 422 `invalid_username` (`field` `username`; owner, 2026-11-27); the UI refuses to start on either or on 401 (12.6) |
 | `GET /admin/v1/session` | yes | — | 200 `{"user": User, "kind": "local" \| "oidc", "expires_at": "…"}` | 401 `session` |
-| `DELETE /admin/v1/session` | yes | — | 204, also for a missing or gone session | — |
+| `DELETE /admin/v1/session` | yes | — | 204, also for a missing or gone session (a store fault answers 503/500) | — |
 | `POST /admin/v1/sessions/reauth` | yes | `{"password"}` | 204 | 401 `invalid_credentials` (wrong password; the 5th deletes the session); 401 `session`; 403 `mode`; 403 `session_kind` |
 | `POST /admin/v1/identities` | yes | `{"iss", "sub"}` | 204 | 409 `already_linked`; 403 `reauth_required`; 403 `mode`; 403 `session_kind`; 401 `session` |
 | The routes of 6.7, `GET` and `POST /admin/v1/probes` | yes | unchanged | unchanged | also 401 `session` |
@@ -828,10 +829,11 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
     (its display name is kept);
   - recipients come from `RCPT TO` only (1 to `min(10, per_minute, per_day)` of the app's email channel), each checked at
     `RCPT` with the enqueue path's recipient check
-    (`validate.go#validRecipient`), so `invalid_recipient` cannot reach `DATA`; `To` and `Cc` headers are not used,
+    (`validate.go#ValidRecipient`), so `invalid_recipient` cannot reach `DATA`; `To` and `Cc` headers are not used,
     and `Bcc` is never forwarded;
-  - `Subject` is RFC 2047-decoded; `Reply-To`, if present, must be one address and becomes `reply_to`; other headers
-    are dropped;
+  - `Subject` is RFC 2047-decoded (Go's `mime.WordDecoder` defaults: encoded-words in `utf-8`, `us-ascii` or
+    `iso-8859-1`; the body's charset rule below is stricter); `Reply-To`, if present, must be one address and becomes
+    `reply_to`; other headers are dropped;
   - the body is one `text/plain` and/or one `text/html` part, single or `multipart/alternative`;
     `Content-Transfer-Encoding` `7bit`, `8bit`, `quoted-printable` or `base64` is decoded; `charset` must be `utf-8`
     or `us-ascii` (absent means `us-ascii`) **(call)**; anything else (attachments, other parts or charsets) is
@@ -854,7 +856,7 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
   | Bad credentials, any cause | `535 5.7.8` |
   | `MAIL FROM` not an allowed sender; header `From` differs; `channel_not_allowed` | `550 5.7.1` |
   | Malformed `RCPT TO` address | `553 5.1.3` |
-  | An `RCPT TO` beyond `min(10, per_minute, per_day)` of the app's email channel (so `too_many_recipients_for_limit` cannot reach `DATA`) | `452 4.5.3` |
+  | An `RCPT TO` beyond `min(10, per_minute, per_day)` of the app's email channel (so `too_many_recipients_for_limit` cannot reach `DATA`; the 11th is go-smtp's own `MaxRecipients` reply) | `452 4.5.3` |
   | `DATA` over `SIZE` | `552 5.3.4` |
   | Unsupported content, no `Message-ID`, a bad `Reply-To`, a refused subject (CR/LF, over 998), `body_required` (no non-empty part), `idempotency_conflict` (same `Message-ID`, other content) | `554 5.6.0` |
   | `rate_limited` | `451 4.7.1` |
@@ -868,7 +870,7 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
   and the reply code only: never an address, subject, `Message-ID` or body (Rule 4).
 - **Dependencies.** The SMTP server is `github.com/emersion/go-smtp` with `github.com/emersion/go-sasl`, and argon2id
   (12.1) is `golang.org/x/crypto/argon2`. These three modules are the only new direct Go dependencies (`api/go.mod`
-  requires only `github.com/google/uuid` and `modernc.org/sqlite` today), each pinned by `go.mod` and `go.sum`
+  required only `github.com/google/uuid` and `modernc.org/sqlite` before), each pinned by `go.mod` and `go.sum`
   **(call)**.
 
 ### 12.9 Configuration added (K3, U2 amended)
@@ -906,7 +908,7 @@ resent minutes later (still `250 2.0.0`), the 1-hour window and body deletion at
 schema; logs with no address, subject, token or password. Smoke runs the API at the edge's 96m, so a hash over that
 limit fails it (12.1).
 
-e2e authentication (UI-05 is rewritten in the build PR): the session is opaque, so there is no cookie to forge. The
+e2e authentication (UI-05): the session is opaque, so there is no cookie to forge. The
 stub's `GET /admin/v1/session` accepts one fixed `fake-`-prefixed token, sized like the other stub fixtures, and
 answers its `User`; `beforeEach` sets `commsgun_session` to it, and only the login specs drive the form **(call)**.
 

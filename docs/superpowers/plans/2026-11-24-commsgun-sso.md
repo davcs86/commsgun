@@ -623,9 +623,9 @@ it('an http: issuer passed to beginAuth directly is refused by openid-client'); 
   for `link` reads no session, refuses a missing or stale `auth_time` (Task 8 `completeAuth`; cookie cleared, no
   confirmation), re-seals the cookie with `iss`, `sub`, `preferredUsername` (keeping `started` and `exp`), and renders
   "You are linking <preferred_username> to <username>" (`your SSO account` when the claim is absent) with Confirm and
-  Cancel posting to `/auth/link`. `POST /auth/link` checks `Origin` (UI-01), clears `commsgun_oidc` always, requires
-  `purpose === 'link'` and `bindingMatches(locals.session.token, tx.binding)`, then 303 `/account?link=<linked |
-  cancelled | already_linked | reauth_required | error>`.
+  Cancel posting to `/auth/link`. `POST /auth/link` checks `Origin` (UI-01), clears `commsgun_oidc` always once past the
+  Origin check, requires `purpose === 'link'` and `bindingMatches(locals.session.token, tx.binding)`, then 303
+  `/account?link=<linked | cancelled | already_linked | reauth_required | error>`.
 
 - [ ] **Step 1: Write the failing tests**
 
