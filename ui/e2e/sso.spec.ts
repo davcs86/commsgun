@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type BrowserContext } from '@playwright/test';
-import { OIDC_COOKIE, SESSION_COOKIE } from '../src/lib/server/constants.js';
+import { OIDC_COOKIE, OIDC_NEXT_MAX, SESSION_COOKIE } from '../src/lib/server/constants.js';
 import {
 	oidcSessions,
 	setAuth,
@@ -170,7 +170,7 @@ for (const [name, next] of [
 	['//evil.example', '//evil.example'],
 	['/\\evil', '/\\evil'],
 	['/login', '/login'],
-	['3000 characters', 'x'.repeat(3000)]
+	['a 3000-character path', '/' + 'a'.repeat(2999)]
 ]) {
 	test(`a hostile next (${name}) lands on "/"`, async ({ page }) => {
 		const authorize = page.waitForRequest((r) => r.url().startsWith(`${ISSUER_URL}/authorize`));
@@ -181,8 +181,20 @@ for (const [name, next] of [
 			/^http:\/\/127\.0\.0\.1:\d+\/auth\/callback$/
 		);
 		expect(url.href).not.toContain('evil');
-		expect(url.href).not.toContain('x'.repeat(20));
+		expect(url.href).not.toContain('a'.repeat(20));
 		await expect(page).toHaveURL(/127\.0\.0\.1:\d+\/$/);
 		await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
 	});
 }
+
+test('a next of exactly OIDC_NEXT_MAX characters survives the round trip', async ({
+	page,
+	context
+}) => {
+	const next = '/' + 'a'.repeat(OIDC_NEXT_MAX - 1);
+	expect(next).toHaveLength(OIDC_NEXT_MAX);
+	await page.goto(`/login/sso?next=${encodeURIComponent(next)}`);
+	await expect(page).toHaveURL(new RegExp(`127\\.0\\.0\\.1:\\d+${next}$`));
+	expect((await cookie(context, SESSION_COOKIE))?.value).toBe(STUB_SESSION_TOKEN);
+	expect(await cookie(context, OIDC_COOKIE)).toBeUndefined();
+});

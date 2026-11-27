@@ -1,6 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 import { getEnv } from '#lib/server/env.js';
-import { OIDC_COOKIE, OIDC_TX_TTL_MS } from '#lib/server/constants.js';
+import { OIDC_COOKIE, OIDC_NEXT_MAX, OIDC_TX_TTL_MS } from '#lib/server/constants.js';
 import { beginAuth, logSsoNotConfigured } from '#lib/server/oidc.js';
 import { sealTransaction } from '#lib/server/oidc-cookie.js';
 import { safeNext } from '#lib/server/session.js';
@@ -13,11 +13,13 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		logSsoNotConfigured();
 		redirect(303, '/login?sso=not_configured');
 	}
+	const safe = safeNext(url.searchParams.get('next'));
+	const next = safe.length > OIDC_NEXT_MAX ? '/' : safe;
 	let started: Awaited<ReturnType<typeof beginAuth>>;
 	try {
 		started = await beginAuth(
 			{ ...env.oidc, origin: env.origin },
-			{ purpose: 'login', next: safeNext(url.searchParams.get('next')) },
+			{ purpose: 'login', next },
 			Date.now()
 		);
 	} catch {

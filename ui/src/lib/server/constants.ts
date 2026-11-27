@@ -13,6 +13,8 @@ export const IMPORT_RETRY_MS = 1000;
 export const OIDC_COOKIE = 'commsgun_oidc';
 export const OIDC_TX_TTL_MS = 600_000;
 export const OIDC_KEY_LABEL = 'commsgun-oidc-key';
+// A longer next would push commsgun_oidc past the browser's 4 KB cookie limit.
+export const OIDC_NEXT_MAX = 2048;
 export const DEFAULT_OIDC_SCOPES = 'openid profile email';
 // Twin of the SSO spec § 3 auth_time skew (CG-02).
 export const AUTH_TIME_SKEW_MS = 30_000;

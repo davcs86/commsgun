@@ -1,7 +1,7 @@
 import { createApi } from '#lib/server/api.js';
 import { getEnv } from '#lib/server/env.js';
 import { OIDC_COOKIE, SESSION_COOKIE } from '#lib/server/constants.js';
-import { completeAuth } from '#lib/server/oidc.js';
+import { completeAuth, logSsoNotConfigured } from '#lib/server/oidc.js';
 import { openTransaction } from '#lib/server/oidc-cookie.js';
 import type { PageServerLoad } from './$types';
 
@@ -19,7 +19,10 @@ export const load: PageServerLoad = async ({ url, cookies, fetch }) => {
 	const tx = openTransaction(env.oidcKey, cookies.get(OIDC_COOKIE), Date.now());
 	cookies.delete(OIDC_COOKIE, { path: '/auth' });
 	if (!tx || tx.purpose !== 'login') return refused('state', EXPIRED);
-	if (!env.oidc) return refused('not_configured', 'SSO is not configured');
+	if (!env.oidc) {
+		logSsoNotConfigured();
+		return { next: null, message: 'SSO is not configured' };
+	}
 
 	const auth = await completeAuth({ ...env.oidc, origin: env.origin }, tx, url);
 	if (!auth.ok) {
