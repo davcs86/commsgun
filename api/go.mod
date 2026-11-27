@@ -5,6 +5,8 @@ go 1.27
 toolchain go1.27.4
 
 require (
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
+	github.com/emersion/go-smtp v0.26.0
 	github.com/google/uuid v1.6.0
 	golang.org/x/crypto v0.59.0
 	modernc.org/sqlite v1.61.0

@@ -74,6 +74,10 @@ const (
 	ReauthWindow            = 5 * time.Minute
 	ReauthMaxFailures       = 5
 	IdentitySubjectMaxBytes = 255
+
+	SMTPMaxSessions        = 8
+	SMTPReadTimeout        = 60 * time.Second
+	SMTPMaxMessagesPerConn = 10
 )
 
 // BucketStep maps a stats range up to MaxRange onto a series bucket; the last step has no bound.

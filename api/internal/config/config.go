@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/mail"
 	"regexp"
 	"strings"
@@ -16,9 +17,11 @@ import (
 )
 
 const (
-	defaultDataDir = "/data"
-	providerResend = "resend"
-	providerFake   = "fake"
+	defaultDataDir     = "/data"
+	defaultEnqueueAddr = ":9200"
+	defaultAdminAddr   = ":9201"
+	providerResend     = "resend"
+	providerFake       = "fake"
 )
 
 var appIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
@@ -76,6 +79,8 @@ type Config struct {
 	ResendAPIKey, AdminAPIToken, DataDir string
 	AllowFake                            bool
 	AuthMode                             AuthMode
+	EnqueueAddr, AdminAddr, SMTPAddr     string
+	SMTPTLSCertFile, SMTPTLSKeyFile      string
 }
 
 type rawConfig struct {
@@ -143,6 +148,9 @@ func Load(getenv func(string) string) (*Config, error) {
 	default:
 		return nil, fmt.Errorf("AUTH_MODE: must be %s, %s or %s", AuthLocal, AuthOIDC, AuthBoth)
 	}
+	if err := c.loadListeners(getenv); err != nil {
+		return nil, err
+	}
 	if len(raw.Apps) == 0 {
 		return nil, fmt.Errorf("COMMSGUN_CONFIG apps: at least one app is required")
 	}
@@ -160,6 +168,35 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// loadListeners reads the bind addresses; SMTP is off unless SMTP_ADDR is set, and then needs both TLS files.
+func (c *Config) loadListeners(getenv func(string) string) error {
+	c.EnqueueAddr, c.AdminAddr = defaultEnqueueAddr, defaultAdminAddr
+	if v := getenv("ENQUEUE_ADDR"); v != "" {
+		c.EnqueueAddr = v
+	}
+	if v := getenv("ADMIN_ADDR"); v != "" {
+		c.AdminAddr = v
+	}
+	c.SMTPAddr, c.SMTPTLSCertFile, c.SMTPTLSKeyFile = getenv("SMTP_ADDR"), getenv("SMTP_TLS_CERT_FILE"), getenv("SMTP_TLS_KEY_FILE")
+	for _, a := range [][2]string{{"ENQUEUE_ADDR", c.EnqueueAddr}, {"ADMIN_ADDR", c.AdminAddr}, {"SMTP_ADDR", c.SMTPAddr}} {
+		if a[1] == "" {
+			continue
+		}
+		if _, _, err := net.SplitHostPort(a[1]); err != nil {
+			return fmt.Errorf("%s: must be host:port", a[0])
+		}
+	}
+	for _, f := range [][2]string{{"SMTP_TLS_CERT_FILE", c.SMTPTLSCertFile}, {"SMTP_TLS_KEY_FILE", c.SMTPTLSKeyFile}} {
+		switch {
+		case c.SMTPAddr != "" && f[1] == "":
+			return fmt.Errorf("%s: required when SMTP_ADDR is set", f[0])
+		case c.SMTPAddr == "" && f[1] != "":
+			return fmt.Errorf("%s: refused when SMTP_ADDR is unset", f[0])
+		}
+	}
+	return nil
 }
 
 func buildApp(i int, ra rawApp) (App, error) {

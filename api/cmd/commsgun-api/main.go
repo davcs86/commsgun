@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/emersion/go-smtp"
+
 	"github.com/davcs86/commsgun/api/internal/admin"
 	"github.com/davcs86/commsgun/api/internal/clock"
 	"github.com/davcs86/commsgun/api/internal/config"
@@ -26,14 +29,11 @@ import (
 	"github.com/davcs86/commsgun/api/internal/password"
 	"github.com/davcs86/commsgun/api/internal/provider"
 	"github.com/davcs86/commsgun/api/internal/store"
+	"github.com/davcs86/commsgun/api/internal/submission"
 	"github.com/davcs86/commsgun/api/internal/worker"
 )
 
-const (
-	listenEnqueue = ":9200"
-	listenAdmin   = ":9201"
-	errNotFound   = `{"error":"not_found"}` + "\n"
-)
+const errNotFound = `{"error":"not_found"}` + "\n"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "admin" {
@@ -44,21 +44,29 @@ func main() {
 	defer stop()
 	// Restoring default handling after the first signal lets a second one kill the process.
 	go func() { <-ctx.Done(); stop() }()
-	if err := run(ctx, os.Getenv, os.Stdout, listenEnqueue, listenAdmin); err != nil {
+	if err := run(ctx, os.Getenv, os.Stdout); err != nil {
 		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("commsgun-api failed", "error", err.Error())
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, getenv func(string) string, stdout io.Writer, enqueueAddr, adminAddr string) error {
-	return runWith(ctx, getenv, stdout, enqueueAddr, adminAddr, nil)
+func run(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
+	return runWith(ctx, getenv, stdout, nil)
 }
 
 // runWith lets tests wrap each provider; wrap is nil in production.
-func runWith(ctx context.Context, getenv func(string) string, stdout io.Writer, enqAddr, admAddr string, wrap func(provider.Provider) provider.Provider) error {
+func runWith(ctx context.Context, getenv func(string) string, stdout io.Writer, wrap func(provider.Provider) provider.Provider) error {
 	cfg, err := config.Load(getenv)
 	if err != nil {
 		return err
+	}
+	var smtpTLS *tls.Config
+	if cfg.SMTPAddr != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.SMTPTLSCertFile, cfg.SMTPTLSKeyFile)
+		if err != nil {
+			return fmt.Errorf("SMTP_TLS_CERT_FILE, SMTP_TLS_KEY_FILE: %w", err)
+		}
+		smtpTLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	}
 	log := slog.New(slog.NewJSONHandler(stdout, nil))
 	clk := clock.Real{}
@@ -94,17 +102,30 @@ func runWith(ctx context.Context, getenv func(string) string, stdout io.Writer, 
 	admMux.Handle("/healthz", hh)
 	admMux.HandleFunc("/", notFound)
 
-	enqSrv, enqLn, err := listen(enqAddr, enqMux)
+	enqSrv, enqLn, err := listen(cfg.EnqueueAddr, enqMux)
 	if err != nil {
 		return err
 	}
-	admSrv, admLn, err := listen(admAddr, admMux)
+	admSrv, admLn, err := listen(cfg.AdminAddr, admMux)
 	if err != nil {
 		enqLn.Close()
 		return err
 	}
+	var smtpSrv *smtp.Server
+	var smtpLn net.Listener
+	if smtpTLS != nil {
+		if smtpLn, err = net.Listen("tcp", cfg.SMTPAddr); err != nil {
+			enqLn.Close()
+			admLn.Close()
+			return fmt.Errorf("listen %s: %w", cfg.SMTPAddr, err)
+		}
+		smtpSrv = submission.NewServer(cfg, st, clk, log, smtpTLS)
+	}
 	log.Info("listening", "listener", "enqueue", "addr", enqLn.Addr().String())
 	log.Info("listening", "listener", "admin", "addr", admLn.Addr().String())
+	if smtpSrv != nil {
+		log.Info("listening", "listener", "smtp", "addr", smtpLn.Addr().String())
+	}
 
 	lctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -117,13 +138,20 @@ func runWith(ctx context.Context, getenv func(string) string, stdout io.Writer, 
 	loop(func() { poller.Run(lctx) })
 	loop(func() { sweepLoop(lctx, st, clk, log) })
 
-	serveErr := make(chan error, 2)
+	serveErr := make(chan error, 3)
 	for _, s := range []struct {
 		srv *http.Server
 		ln  net.Listener
 	}{{enqSrv, enqLn}, {admSrv, admLn}} {
 		loop(func() {
 			if err := s.srv.Serve(s.ln); !errors.Is(err, http.ErrServerClosed) {
+				serveErr <- err
+			}
+		})
+	}
+	if smtpSrv != nil {
+		loop(func() {
+			if err := smtpSrv.Serve(smtpLn); err != nil {
 				serveErr <- err
 			}
 		})
@@ -142,6 +170,13 @@ func runWith(ctx context.Context, getenv func(string) string, stdout io.Writer, 
 		if err := s.Shutdown(sctx); err != nil {
 			log.Warn("http shutdown timed out; closing open connections", "timeout_ms", constants.ShutdownTimeout.Milliseconds())
 			runErr = errors.Join(runErr, err, s.Close())
+		}
+	}
+	if smtpSrv != nil {
+		// go-smtp waits for idle connections too, and Close after Shutdown is a no-op.
+		if err := smtpSrv.Shutdown(sctx); err != nil {
+			log.Warn("smtp shutdown timed out", "timeout_ms", constants.ShutdownTimeout.Milliseconds())
+			runErr = errors.Join(runErr, err)
 		}
 	}
 	wg.Wait()

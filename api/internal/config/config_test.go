@@ -303,3 +303,46 @@ func TestAuthenticateSMTP(t *testing.T) {
 		}
 	}
 }
+
+// defaults; SMTP_ADDR without TLS files, TLS files without SMTP_ADDR, "9203" → Load error
+func TestListenerAddressConfig(t *testing.T) {
+	c, err := load(t, validDoc(), baseEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EnqueueAddr != ":9200" || c.AdminAddr != ":9201" || c.SMTPAddr != "" ||
+		c.SMTPTLSCertFile != "" || c.SMTPTLSKeyFile != "" {
+		t.Errorf("defaults: %q %q %q %q %q", c.EnqueueAddr, c.AdminAddr, c.SMTPAddr, c.SMTPTLSCertFile, c.SMTPTLSKeyFile)
+	}
+	e := baseEnv()
+	e["ENQUEUE_ADDR"], e["ADMIN_ADDR"], e["SMTP_ADDR"] = "10.0.0.2:9200", "10.0.0.2:9201", "10.0.1.2:9203"
+	e["SMTP_TLS_CERT_FILE"], e["SMTP_TLS_KEY_FILE"] = "/tls/cert.pem", "/tls/key.pem"
+	if c, err = load(t, validDoc(), e); err != nil {
+		t.Fatal(err)
+	}
+	if c.EnqueueAddr != "10.0.0.2:9200" || c.AdminAddr != "10.0.0.2:9201" || c.SMTPAddr != "10.0.1.2:9203" ||
+		c.SMTPTLSCertFile != "/tls/cert.pem" || c.SMTPTLSKeyFile != "/tls/key.pem" {
+		t.Errorf("set: %+v", c)
+	}
+	for name, tc := range map[string]struct {
+		env  env
+		want string
+	}{
+		"smtp without cert":   {env{"SMTP_ADDR": ":9203", "SMTP_TLS_KEY_FILE": "/k"}, "SMTP_TLS_CERT_FILE"},
+		"smtp without key":    {env{"SMTP_ADDR": ":9203", "SMTP_TLS_CERT_FILE": "/c"}, "SMTP_TLS_KEY_FILE"},
+		"cert without smtp":   {env{"SMTP_TLS_CERT_FILE": "/c"}, "SMTP_TLS_CERT_FILE"},
+		"key without smtp":    {env{"SMTP_TLS_KEY_FILE": "/k"}, "SMTP_TLS_KEY_FILE"},
+		"enqueue bare port":   {env{"ENQUEUE_ADDR": "9200"}, "ENQUEUE_ADDR"},
+		"admin bare port":     {env{"ADMIN_ADDR": "9201"}, "ADMIN_ADDR"},
+		"smtp bare port":      {env{"SMTP_ADDR": "9203", "SMTP_TLS_CERT_FILE": "/c", "SMTP_TLS_KEY_FILE": "/k"}, "SMTP_ADDR"},
+		"enqueue three parts": {env{"ENQUEUE_ADDR": "a:b:9200"}, "ENQUEUE_ADDR"},
+	} {
+		e := baseEnv()
+		for k, v := range tc.env {
+			e[k] = v
+		}
+		if _, err := load(t, validDoc(), e); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err %v, want one naming %s", name, err, tc.want)
+		}
+	}
+}
