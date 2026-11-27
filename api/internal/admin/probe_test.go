@@ -53,7 +53,7 @@ func probeSetup(t *testing.T, cfg *config.Config) probeEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 	buf := &bytes.Buffer{}
-	return probeEnv{NewHandler(st, cfg, clock.NewFake(now), slog.New(slog.NewJSONHandler(buf, nil))), st, buf}
+	return probeEnv{NewHandler(st, cfg, clock.NewFake(now), slog.New(slog.NewJSONHandler(buf, nil)), &fakeHasher{}), st, buf}
 }
 
 func (e probeEnv) send(method, key, body string) *httptest.ResponseRecorder {

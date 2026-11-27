@@ -1,4 +1,4 @@
-// Package admin serves the bearer-protected admin API under /admin/v1; only /probes accepts a write.
+// Package admin serves the bearer-protected admin API under /admin/v1; only /probes and the account routes write.
 package admin
 
 import (
@@ -40,11 +40,12 @@ type handler struct {
 	cfg   *config.Config
 	clk   clock.Clock
 	log   *slog.Logger
+	hs    hasher
 }
 
 // NewHandler returns the admin API; it answers only /admin/v1/... and 404s everything else.
-func NewHandler(st *store.Store, cfg *config.Config, clk clock.Clock, log *slog.Logger) http.Handler {
-	return &handler{st: st, token: sha256.Sum256([]byte(cfg.AdminAPIToken)), cfg: cfg, clk: clk, log: log}
+func NewHandler(st *store.Store, cfg *config.Config, clk clock.Clock, log *slog.Logger, h hasher) http.Handler {
+	return &handler{st: st, token: sha256.Sum256([]byte(cfg.AdminAPIToken)), cfg: cfg, clk: clk, log: log, hs: h}
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +60,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if rest == "probes" {
 		h.probes(w, r)
+		return
+	}
+	if h.account(w, r, rest) {
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -201,7 +205,7 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": pe.code, "field": pe.field})
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": errMissing})
-	case errors.Is(err, store.ErrBusy):
+	case errors.Is(err, store.ErrBusy), errors.Is(err, errUnavailable):
 		w.Header().Set("Retry-After", enqueue.RetryAfterSeconds(constants.RetryAfterBusy))
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
 	default:

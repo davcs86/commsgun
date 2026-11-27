@@ -46,11 +46,33 @@ type ProviderCfg struct {
 	PerMinute, PerDay int
 }
 
+// AuthMode is AUTH_MODE: which session kinds the API creates and accepts.
+type AuthMode string
+
+const (
+	AuthLocal AuthMode = "local"
+	AuthOIDC  AuthMode = "oidc"
+	AuthBoth  AuthMode = "both"
+)
+
+func (m AuthMode) Allows(kind model.SessionKind) bool {
+	switch m {
+	case AuthLocal:
+		return kind == model.KindLocal
+	case AuthOIDC:
+		return kind == model.KindOIDC
+	case AuthBoth:
+		return kind == model.KindLocal || kind == model.KindOIDC
+	}
+	return false
+}
+
 type Config struct {
 	Apps                                 map[string]App
 	Providers                            map[model.Channel]*ProviderCfg
 	ResendAPIKey, AdminAPIToken, DataDir string
 	AllowFake                            bool
+	AuthMode                             AuthMode
 }
 
 type rawConfig struct {
@@ -107,6 +129,14 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	if len(c.AdminAPIToken) < constants.MinSecretLen {
 		return nil, fmt.Errorf("ADMIN_API_TOKEN: must be at least %d characters", constants.MinSecretLen)
+	}
+	switch m := AuthMode(getenv("AUTH_MODE")); m {
+	case "":
+		c.AuthMode = AuthLocal
+	case AuthLocal, AuthOIDC, AuthBoth:
+		c.AuthMode = m
+	default:
+		return nil, fmt.Errorf("AUTH_MODE: must be %s, %s or %s", AuthLocal, AuthOIDC, AuthBoth)
 	}
 	if len(raw.Apps) == 0 {
 		return nil, fmt.Errorf("COMMSGUN_CONFIG apps: at least one app is required")

@@ -34,7 +34,7 @@ func setup(t *testing.T) (http.Handler, *store.Store) {
 	cfg := &config.Config{AdminAPIToken: token, Providers: map[model.Channel]*config.ProviderCfg{
 		model.ChannelEmail: {Name: "resend", PerMinute: 60, PerDay: 100},
 	}}
-	return NewHandler(st, cfg, clock.NewFake(now), slog.New(slog.NewJSONHandler(io.Discard, nil))), st
+	return NewHandler(st, cfg, clock.NewFake(now), slog.New(slog.NewJSONHandler(io.Discard, nil)), &fakeHasher{}), st
 }
 
 func do(h http.Handler, method, path, auth string) *httptest.ResponseRecorder {

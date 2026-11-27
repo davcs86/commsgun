@@ -216,3 +216,35 @@ func TestAuthenticate(t *testing.T) {
 		}
 	}
 }
+
+// unset → local; "oidc","both" accepted; "OIDC", "sso" → Load error naming AUTH_MODE
+func TestAuthModeConfig(t *testing.T) {
+	for _, c := range []struct {
+		env  string
+		want AuthMode
+	}{{"", AuthLocal}, {"local", AuthLocal}, {"oidc", AuthOIDC}, {"both", AuthBoth}} {
+		e := baseEnv()
+		if c.env != "" {
+			e["AUTH_MODE"] = c.env
+		}
+		cfg, err := load(t, validDoc(), e)
+		if err != nil {
+			t.Errorf("AUTH_MODE=%q: %v", c.env, err)
+		} else if cfg.AuthMode != c.want {
+			t.Errorf("AUTH_MODE=%q: mode %q, want %q", c.env, cfg.AuthMode, c.want)
+		}
+	}
+	for _, v := range []string{"OIDC", "sso", " local"} {
+		e := baseEnv()
+		e["AUTH_MODE"] = v
+		if _, err := load(t, validDoc(), e); err == nil || !strings.Contains(err.Error(), "AUTH_MODE") {
+			t.Errorf("AUTH_MODE=%q: err %v, want one naming AUTH_MODE", v, err)
+		}
+	}
+	allows := map[AuthMode][2]bool{AuthLocal: {true, false}, AuthOIDC: {false, true}, AuthBoth: {true, true}}
+	for m, want := range allows {
+		if m.Allows(model.KindLocal) != want[0] || m.Allows(model.KindOIDC) != want[1] {
+			t.Errorf("%s.Allows: local %v oidc %v, want %v", m, m.Allows(model.KindLocal), m.Allows(model.KindOIDC), want)
+		}
+	}
+}

@@ -1,10 +1,7 @@
 package admin
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 
 	"github.com/davcs86/commsgun/api/internal/constants"
@@ -90,29 +87,13 @@ func (h *handler) probeSend(w http.ResponseWriter, r *http.Request) (status int,
 		writeJSON(w, code, body)
 		return code, channel, ""
 	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, constants.ProbeMaxBodyBytes+1))
-	if err != nil {
-		return reject(http.StatusUnprocessableEntity, "invalid_json", "")
-	}
-	if len(raw) > constants.ProbeMaxBodyBytes {
-		w.WriteHeader(http.StatusRequestEntityTooLarge)
-		return http.StatusRequestEntityTooLarge, "", ""
-	}
 	var req probeRequest
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		var te *json.UnmarshalTypeError
-		if name, ok := enqueue.UnknownField(err); ok {
-			return reject(http.StatusUnprocessableEntity, "unknown_field", name)
+	if code, msg, field := decodeStrict(r, constants.ProbeMaxBodyBytes, &req); code != 0 {
+		if code == http.StatusRequestEntityTooLarge {
+			w.WriteHeader(code)
+			return code, "", ""
 		}
-		if errors.As(err, &te) {
-			return reject(http.StatusUnprocessableEntity, "invalid_json", te.Field)
-		}
-		return reject(http.StatusUnprocessableEntity, "invalid_json", "")
-	}
-	if dec.More() {
-		return reject(http.StatusUnprocessableEntity, "invalid_json", "")
+		return reject(code, msg, field)
 	}
 	ch := model.Channel(req.Channel)
 	if ch != model.ChannelEmail && ch != model.ChannelSMS {

@@ -89,7 +89,8 @@ func runWith(ctx context.Context, getenv func(string) string, stdout io.Writer, 
 	enqMux.Handle("/healthz/backlog", hh)
 	enqMux.HandleFunc("/", notFound)
 	admMux := http.NewServeMux()
-	admMux.Handle("/admin/v1/", admin.NewHandler(st, cfg, clk, log))
+	hasher := password.NewHasher(password.Default(), constants.PasswordHashConcurrency)
+	admMux.Handle("/admin/v1/", admin.NewHandler(st, cfg, clk, log, hasher))
 	admMux.Handle("/healthz", hh)
 	admMux.HandleFunc("/", notFound)
 

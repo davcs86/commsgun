@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -279,9 +280,23 @@ func TestAdminWhileServerRuns(t *testing.T) {
 	mustCLI(t, p.dir, cliPassword+"\n", "create", cliUser)
 	st := openStore(t, p.dir)
 	h := cliSession(t, st, cliUser, "tok-live")
+	bearer := map[string]string{"Authorization": "Bearer " + adminToken}
+	creds, _ := json.Marshal(map[string]string{"username": cliUser, "password": cliPassword})
+	code, body := do(t, http.MethodPost, "http://"+p.adm+"/admin/v1/sessions/local", bearer, string(creds))
+	var ses struct{ Token string }
+	if code != http.StatusCreated || json.Unmarshal([]byte(body), &ses) != nil || ses.Token == "" {
+		t.Fatalf("login on the live server: %d %s", code, body)
+	}
+	withSession := map[string]string{"Authorization": "Bearer " + adminToken, "Commsgun-Session": ses.Token}
+	if code, body := do(t, http.MethodGet, "http://"+p.adm+"/admin/v1/session", withSession, ""); code != http.StatusOK {
+		t.Fatalf("GET session before disable: %d %s", code, body)
+	}
 	mustCLI(t, p.dir, "", "disable", cliUser)
 	sessionGone(t, st, h)
-	// Task 5/7 adds GET /admin/v1/session; until then the live server must stay healthy beside the CLI.
+	code, body = do(t, http.MethodGet, "http://"+p.adm+"/admin/v1/session", withSession, "")
+	if code != http.StatusUnauthorized || strings.TrimSpace(body) != `{"error":"session"}` {
+		t.Fatalf("GET session after disable: %d %s, want 401 {\"error\":\"session\"}", code, body)
+	}
 	if code, _ := do(t, http.MethodGet, "http://"+p.adm+"/healthz", nil, ""); code != http.StatusOK {
 		t.Fatalf("admin healthz = %d after the CLI, want 200", code)
 	}
