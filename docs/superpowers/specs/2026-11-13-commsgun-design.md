@@ -914,7 +914,7 @@ e2e SSO: the stub issuer serves HTTPS from a test CA that OpenSSL 3 makes when t
 trusts it only through `NODE_EXTRA_CA_CERTS`; `allowInsecureRequests` is never set. `loadEnv` refuses an `http:` issuer,
 loopback hosts included **(owner, 2026-11-27)**.
 
-## 13. Threat model (draft, pending owner review before P5)
+## 13. Threat model (accepted by the owner, 2026-11-27)
 
 Required by the SSO spec § 3 before the dashboard goes public.
 
@@ -927,7 +927,7 @@ Required by the SSO spec § 3 before the dashboard goes public.
 | Enqueue 9200 | tailnet only (`comms.private.<domain>`) | app id + key; an `smtp_submission` app is refused | app limits (6.3) | none | — | not browser-reachable |
 | SMTP 9203 | the `authelia-smtp` network and host-network processes on the droplet (Caddy, Gatus), address-bound; never published | STARTTLS, then AUTH PLAIN as app `authelia`: these two are the control | app limits 5/min, 30/day (edge); 8 sessions | reset links live only in bodies, deleted by expiry within 1 h | — | — |
 
-Residuals for the owner to accept or reject:
+Residuals, all accepted by the owner (2026-11-27):
 
 1. While `both` is on, a password login is reachable from the internet (SSO spec decision 18).
 2. The `authelia_session` cookie is scoped to `public.<domain>`; the edge strips it before this upstream (SSO spec
