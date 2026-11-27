@@ -77,6 +77,14 @@ type rawProvider struct {
 	PerDay    int    `json:"per_day"`
 }
 
+// DataDir is DATA_DIR, or /data when unset.
+func DataDir(getenv func(string) string) string {
+	if d := getenv("DATA_DIR"); d != "" {
+		return d
+	}
+	return defaultDataDir
+}
+
 // Load validates everything and never puts a key or token value in an error.
 func Load(getenv func(string) string) (*Config, error) {
 	var raw rawConfig
@@ -94,11 +102,8 @@ func Load(getenv func(string) string) (*Config, error) {
 		Providers:     map[model.Channel]*ProviderCfg{},
 		ResendAPIKey:  getenv("RESEND_API_KEY"),
 		AdminAPIToken: getenv("ADMIN_API_TOKEN"),
-		DataDir:       getenv("DATA_DIR"),
+		DataDir:       DataDir(getenv),
 		AllowFake:     getenv("COMMSGUN_ALLOW_FAKE") == "1",
-	}
-	if c.DataDir == "" {
-		c.DataDir = defaultDataDir
 	}
 	if len(c.AdminAPIToken) < constants.MinSecretLen {
 		return nil, fmt.Errorf("ADMIN_API_TOKEN: must be at least %d characters", constants.MinSecretLen)

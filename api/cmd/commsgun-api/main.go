@@ -23,6 +23,7 @@ import (
 	"github.com/davcs86/commsgun/api/internal/enqueue"
 	"github.com/davcs86/commsgun/api/internal/health"
 	"github.com/davcs86/commsgun/api/internal/model"
+	"github.com/davcs86/commsgun/api/internal/password"
 	"github.com/davcs86/commsgun/api/internal/provider"
 	"github.com/davcs86/commsgun/api/internal/store"
 	"github.com/davcs86/commsgun/api/internal/worker"
@@ -35,6 +36,10 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		h := password.NewHasher(password.Default(), constants.PasswordHashConcurrency)
+		os.Exit(runAdmin(context.Background(), os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr, clock.Real{}, h))
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	// Restoring default handling after the first signal lets a second one kill the process.
