@@ -108,12 +108,6 @@ done
 docker network create "$NETWORK" >/dev/null
 docker volume create "$VOLUME" >/dev/null
 
-docker run -d --name "$API" --network "$NETWORK" \
-  --read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m \
-  -v "$VOLUME":/data -p "127.0.0.1:${ENQUEUE_PORT}:9200" \
-  -e COMMSGUN_CONFIG="$CONFIG" -e COMMSGUN_ALLOW_FAKE=1 \
-  -e ADMIN_API_TOKEN="$ADMIN_API_TOKEN" \
-  "$API_IMAGE" >/dev/null
 docker run -d --name "$UI" --network "$NETWORK" \
   --read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m \
   -p "127.0.0.1:${UI_PORT}:9202" \
@@ -121,6 +115,22 @@ docker run -d --name "$UI" --network "$NETWORK" \
   -e ADMIN_API_TOKEN="$ADMIN_API_TOKEN" -e SESSION_SECRET="$SESSION_SECRET" \
   -e ADMIN_PASSWORD="$ADMIN_PASSWORD" \
   "$UI_IMAGE" >/dev/null
+
+# The UI starts first: its healthz must not answer 200 until the API has taken the import.
+healthz_start=$SECONDS
+while [ $((SECONDS - healthz_start)) -le 3 ]; do
+  code="$(ui_curl -o /dev/null -w '%{http_code}' --max-time 1 "$UI_URL/healthz" 2>/dev/null || true)"
+  [ "$code" != 200 ] || fail "ui healthz waits for the import" "healthz answered 200 before the api ran"
+  sleep 0.5
+done
+pass "ui healthz waits for the import"
+
+docker run -d --name "$API" --network "$NETWORK" \
+  --read-only --cap-drop ALL --security-opt no-new-privileges --memory 96m \
+  -v "$VOLUME":/data -p "127.0.0.1:${ENQUEUE_PORT}:9200" \
+  -e COMMSGUN_CONFIG="$CONFIG" -e COMMSGUN_ALLOW_FAKE=1 \
+  -e ADMIN_API_TOKEN="$ADMIN_API_TOKEN" \
+  "$API_IMAGE" >/dev/null
 
 wait_ok "api healthz" "$ENQUEUE/healthz"
 wait_ok "ui healthz" "$UI_URL/healthz"

@@ -8,3 +8,4 @@ export const SESSION_KEY_LABEL = 'commsgun-session-key';
 export const MIN_ADMIN_PASSWORD = 16;
 export const MIN_SESSION_SECRET = 32;
 export const MIN_ADMIN_API_TOKEN = 32;
+export const IMPORT_RETRY_MS = 1000;

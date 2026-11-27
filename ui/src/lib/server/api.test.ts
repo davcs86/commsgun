@@ -330,4 +330,23 @@ describe('createApi', () => {
 		expect(String(fetchFn.mock.calls[0][0])).toBe('http://api:9201/admin/v1/probes');
 		expect(fetchFn.mock.calls[0][1]?.method).toBeUndefined();
 	});
+	it('bootstrapImport posts {"username":"admin","password"} with the bearer token and no session header', async () => {
+		const fetchFn = vi.fn<(u: string, i?: RequestInit) => Promise<Response>>(async () =>
+			json({ result: 'imported' })
+		);
+		const api = createApi(env, fetchFn as unknown as typeof fetch);
+		const r = await api.bootstrapImport('admin', env.adminPassword);
+		expect(r).toEqual({ ok: true, data: { result: 'imported' } });
+		const [url, init] = fetchFn.mock.calls[0];
+		expect(String(url)).toBe('http://api:9201/admin/v1/bootstrap/import');
+		expect(init?.method).toBe('POST');
+		expect(JSON.parse(String(init?.body))).toEqual({
+			username: 'admin',
+			password: env.adminPassword
+		});
+		const headers = new Headers(init?.headers);
+		expect(headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+		expect(headers.get('commsgun-session')).toBeNull();
+		expect(init?.signal).toBeInstanceOf(AbortSignal);
+	});
 });

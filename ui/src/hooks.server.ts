@@ -1,13 +1,20 @@
 import { redirect, text } from '@sveltejs/kit';
 import type { Handle, ServerInit } from '@sveltejs/kit/hooks';
+import { createApi } from './lib/server/api';
+import { importAdmin } from './lib/server/bootstrap';
 import { getEnv } from './lib/server/env';
 import { SESSION_COOKIE } from './lib/server/constants';
 import { verifySession } from './lib/server/session';
 
 const PUBLIC_PATHS = new Set(['/login', '/logout', '/healthz']);
 
-export const init: ServerInit = () => {
-	getEnv();
+// adapter-node awaits init before it listens, so /healthz waits for the import and a throw stops the process.
+export const init: ServerInit = async () => {
+	const env = getEnv();
+	if (!env.adminPassword) return;
+	if ((await importAdmin(createApi(env, fetch), env.adminPassword)) === 'skipped') {
+		console.warn(JSON.stringify({ level: 'warn', msg: 'ADMIN_PASSWORD is ignored: users exist' }));
+	}
 };
 
 export const handle: Handle = async ({ event, resolve }) => {

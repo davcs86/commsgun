@@ -8,9 +8,13 @@ export type ApiResult<T> =
 	| { ok: true; data: T }
 	| { ok: false; status: number; reason: 'unavailable' | 'error' | 'not_found' };
 
+// `error` is the API's code, or `unavailable` for a network error or a timeout.
+export type AccountResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string };
+
 const MESSAGE_ID = /^[A-Za-z0-9-]{1,64}$/;
 
-type Endpoint = 'stats' | 'messages' | 'message' | 'facets' | 'overview' | 'probe';
+type Endpoint =
+	'stats' | 'messages' | 'message' | 'facets' | 'overview' | 'probe' | 'bootstrap_import';
 
 const isAbort = (e: unknown) =>
 	e instanceof Error && (e.name === 'AbortError' || e.name === 'TimeoutError');
@@ -113,7 +117,45 @@ export function createApi(env: Env, fetchFn: typeof fetch) {
 		return { kind: res.status === 503 ? 'unavailable' : 'error' };
 	}
 
+	async function bootstrapImport(
+		username: string,
+		password: string
+	): Promise<AccountResult<{ result: 'imported' | 'skipped' }>> {
+		let res: Response;
+		let body: Record<string, unknown> = {};
+		try {
+			res = await fetchFn(`${base}/admin/v1/bootstrap/import`, {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${env.adminApiToken}`,
+					accept: 'application/json',
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({ username, password }),
+				signal: AbortSignal.timeout(API_TIMEOUT_MS)
+			});
+			const parsed: unknown = await res.json().catch((e: unknown) => {
+				if (isAbort(e)) throw e;
+				return {};
+			});
+			if (typeof parsed === 'object' && parsed !== null) body = parsed as Record<string, unknown>;
+		} catch (e) {
+			logFailure('bootstrap_import', isAbort(e) ? 'timeout' : 'network');
+			return { ok: false, status: 0, error: 'unavailable' };
+		}
+		if (res.status === 200 && (body.result === 'imported' || body.result === 'skipped')) {
+			return { ok: true, data: { result: body.result } };
+		}
+		logFailure('bootstrap_import', res.status);
+		return {
+			ok: false,
+			status: res.status,
+			error: typeof body.error === 'string' ? body.error : 'error'
+		};
+	}
+
 	return {
+		bootstrapImport,
 		probeOptions: () => call<ProbeOptions>('probe', 'probes'),
 		sendProbe,
 		stats: (f: Filters) => call<Stats>('stats', 'stats', toApiParams(f)),

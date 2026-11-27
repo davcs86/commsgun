@@ -337,6 +337,7 @@ type State = {
 	requests: string[];
 	probeMode: ProbeMode;
 	probes: ReceivedProbe[];
+	imports: { username: string }[];
 };
 
 function probeOptions(mode: ProbeMode) {
@@ -434,7 +435,8 @@ export function startStub(port = STUB_PORT) {
 		fail: [],
 		requests: [],
 		probeMode: 'normal',
-		probes: []
+		probes: [],
+		imports: []
 	};
 	const server = createServer(async (req, res) => {
 		const url = new URL(req.url ?? '/', STUB_URL);
@@ -449,11 +451,21 @@ export function startStub(port = STUB_PORT) {
 			if (req.headers.authorization !== `Bearer ${STUB_TOKEN}`) return send(res, 401);
 			return handleProbe(state, req, res);
 		}
+		if (req.method === 'POST' && url.pathname === '/admin/v1/bootstrap/import') {
+			if (req.headers.authorization !== `Bearer ${STUB_TOKEN}`) return send(res, 401);
+			const body = JSON.parse((await readBody(req)) || '{}') as { username?: unknown };
+			const result = state.imports.length === 0 ? 'imported' : 'skipped';
+			state.imports.push({ username: String(body.username) });
+			return send(res, 200, { result });
+		}
 		if (req.method === 'POST' && url.pathname === '/__probe-mode') {
 			const body = JSON.parse((await readBody(req)) || '{}') as { mode?: string };
 			if (!(PROBE_MODES as readonly string[]).includes(body.mode ?? '')) return send(res, 400);
 			state.probeMode = body.mode as ProbeMode;
 			return send(res, 204);
+		}
+		if (req.method === 'GET' && url.pathname === '/__imports') {
+			return send(res, 200, state.imports);
 		}
 		if (req.method === 'GET' && url.pathname === '/__probes') {
 			return send(res, 200, state.probes);
