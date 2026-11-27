@@ -40,6 +40,8 @@ is the plan's proposal, not a decision.
   `commsgun_oidc` `HttpOnly; Secure; SameSite=Lax; Path=/auth`, 10 minutes, sealed with a key derived from
   `SESSION_SECRET` alone.
 - Re-auth: `ReauthWindow` 5 min, `ReauthMaxFailures` 5 per session. Identity: `iss` an `https` URL, `sub` 1–255 bytes.
+- Link (spec 12.5, owner 2026-11-27): every link sends `prompt=login` and `max_age=0`; the callback refuses an ID token
+  without `auth_time` or with `auth_time` before the flow's start minus `AUTH_TIME_SKEW_MS` (30 s).
 - SMTP: container port 9203 on `SMTP_ADDR`; STARTTLS, TLS 1.2+; `AUTH PLAIN` only, as an app with `smtp_submission: true`;
   8 concurrent sessions, 60 s read timeout, 10 messages per connection; `DATA` ≤ `MaxBodyBytes`;
   `send_window_seconds` default and maximum 86400.
@@ -71,7 +73,7 @@ is the plan's proposal, not a decision.
 4. **A junk `commsgun_session` cookie** (empty, 42 or 44 chars, non-base64url, 10 KB) → treated as signed out without
    calling the API, and the cookie is deleted. (Task 7)
 5. **Authelia resends a message after a lost reply** (same `Message-ID`, header in another case, extra whitespace,
-   minutes later) → `250 2.0.0` and no second message. (Task 10, Q2)
+   minutes later) → `250 2.0.0` and no second message. (Task 10)
 
 ---
 
@@ -94,7 +96,7 @@ api/
   internal/admin/decode.go                     NEW strict JSON decoding, shared with probe.go
   internal/admin/probe.go                      uses decode.go
   internal/enqueue/handler.go                  refuses smtp_submission apps (401)
-  internal/enqueue/submit.go                   + SubmitWindowed (Q2)
+  internal/enqueue/submit.go                   + SubmitWindowed
   internal/enqueue/validate.go                 validRecipient → ValidRecipient
   internal/submission/message.go              NEW DATA → enqueue request, reply mapping
   internal/submission/server.go               NEW go-smtp backend and session
@@ -501,25 +503,30 @@ it('accepts an unset or empty ADMIN_PASSWORD as null; rejects 15 characters');
     HMAC-SHA256(`SESSION_SECRET`, `OIDC_KEY_LABEL`); `OIDC_AUTO_PROVISION` present (even empty) → throws. `src/env.ts`
     declares it with a schema that keeps `undefined`.
   - Constants `OIDC_COOKIE = 'commsgun_oidc'`, `OIDC_TX_TTL_MS = 600_000`, `OIDC_KEY_LABEL = 'commsgun-oidc-key'`,
-    `DEFAULT_OIDC_SCOPES = 'openid profile email'`.
-  - `type Transaction = { purpose: 'login' | 'link'; state: string; nonce: string; verifier: string; next: string; exp:
-    number; binding?: string; username?: string; iss?: string; sub?: string; preferredUsername?: string | null }`;
+    `DEFAULT_OIDC_SCOPES = 'openid profile email'`, `AUTH_TIME_SKEW_MS = 30_000` (twin of the SSO spec § 3 skew, CG-02).
+  - `type Transaction = { purpose: 'login' | 'link'; state: string; nonce: string; verifier: string; next: string;
+    started: number; exp: number; binding?: string; username?: string; iss?: string; sub?: string; preferredUsername?:
+    string | null }` (`started` = the flow's start, ms; SSO spec § 3 "Callback state");
     `sealTransaction(key: Buffer, tx: Transaction): string` (AES-256-GCM, base64url); `openTransaction(key: Buffer, value:
     string | undefined, now: number): Transaction | null` (tampered, expired, junk → null, never throws).
   - `beginAuth(oidc: OidcEnv, input: { purpose; next; binding?; username? }, now: number, fetchFn?: typeof fetch):
     Promise<{ url: URL; tx: Transaction }>` — discovery on every call (no cache, so an issuer outage is seen at once),
     `id_token_signed_response_alg: 'RS256'`, `ClientSecretBasic`, `enableNonRepudiationChecks`, PKCE S256, `state`,
-    `nonce`, `redirect_uri` = `${origin}/auth/callback`, `prompt=login` when `purpose === 'link'`.
+    `nonce`, `redirect_uri` = `${origin}/auth/callback`, `started = now`, and `prompt=login` with `max_age=0` when
+    `purpose === 'link'`.
     `completeAuth(oidc, tx, callbackUrl: URL, fetchFn?): Promise<{ ok: true; iss: string; sub: string;
-    preferredUsername: string | null } | { ok: false; reason: 'state' | 'token' | 'unavailable' }>`.
+    preferredUsername: string | null } | { ok: false; reason: 'state' | 'token' | 'unavailable' }>` — discovery on
+    every call too, so each callback verifies on a key set fetched within it (Q9); for `link`, a missing `auth_time` or
+    `auth_time * 1000 < tx.started - AUTH_TIME_SKEW_MS` → reason `token`, the same path as a wrong `nonce`.
     `fetchFn` is passed as openid-client's `customFetch`.
   - `loginOptions(mode: AuthMode | null, ssoConfigured: boolean): { password: boolean; sso: 'button' | 'not_configured'
     | 'hidden' }` (`null` mode = API unreachable: password form plus `<ApiError>`).
   - `ui/e2e/stub-issuer.ts`: `createIssuer(issuerUrl: string)` → `{ handle(req: Request): Promise<Response>; next(claims:
-    Partial<{ sub; preferred_username; iss; aud; exp; nonce; alg }>): void; setLiveSession(sub: string): void; down(on:
-    boolean): void }` with RS256 keys from `generateKeyPairSync` (no key fixture), one-time codes, PKCE and Basic-auth
-    checks; run as a server on a **different site** from the UI (`localhost:4182` vs `127.0.0.1:4173`) so the callback
-    is a cross-site navigation. Playwright env adds `OIDC_ISSUER`, `OIDC_CLIENT_ID=commsgun`, a `fake-`-prefixed
+    Partial<{ sub; preferred_username; iss; aud; exp; nonce; alg; auth_time: number | null }>): void; setLiveSession(sub:
+    string): void; down(on: boolean): void }` with RS256 keys from `generateKeyPairSync` (no key fixture), one-time
+    codes, PKCE and Basic-auth checks; `auth_time` defaults to the moment the code is issued (`null` omits the claim);
+    run as a server on a **different site** from the UI (`localhost:4182` vs `127.0.0.1:4173`) so the callback is a
+    cross-site navigation. Playwright env adds `OIDC_ISSUER`, `OIDC_CLIENT_ID=commsgun`, a `fake-`-prefixed
     `OIDC_CLIENT_SECRET`.
 
 - [ ] **Step 1: Write the failing unit tests**
@@ -532,12 +539,16 @@ it.each(['false', '', 'true'])('rejects OIDC_AUTO_PROVISION=%s');
 it('defaults OIDC_SCOPES to "openid profile email"');
 // oidc-cookie.test.ts: round trip; one flipped byte → null; at exp → null; other key → null; '', 'x', 10 KB → null
 // oidc.test.ts — conformance (SSO spec § 3) against createIssuer('https://issuer.test') via fetchFn
-it('authorization URL: response_type=code, code_challenge_method=S256, state, nonce, scope, redirect_uri; no prompt for login');
-it('link purpose adds prompt=login');
+it('authorization URL: response_type=code, code_challenge_method=S256, state, nonce, scope, redirect_uri; no prompt or max_age for login');
+it('link purpose adds prompt=login and max_age=0; tx.started == now');
+it('link: auth_time absent → { ok: false, reason: "token" }');            // conformance: missing auth_time on a link
+it('link: auth_time at started - 31 s → token; at started - 30 s → ok'); // conformance: stale auth_time on a link
+it('login: an absent or old auth_time is not checked');
 it('success returns iss, sub and preferred_username; the token request used HTTP Basic');
 it.each(['bad state', 'wrong iss', 'wrong aud', 'expired', 'wrong nonce', 'HS256', 'none', 'signed by another key'])
   ('%s → { ok: false }');                                     // state → reason 'state', the rest 'token'
 it('a replayed code fails the second time');
+it('the jwks_uri fetch fails (fetchFn rejects that URL only) → { ok: false }'); // conformance: key set older than 3600 s with the refresh failing (Q9)
 it('discovery failure → unavailable, and the next beginAuth fetches discovery again');
 // login.test.ts: local → password only; oidc+configured → sso only; oidc unconfigured → not_configured; both → both; null → password
 ```
@@ -579,7 +590,8 @@ it('discovery failure → unavailable, and the next beginAuth fetches discovery 
 - Produces: `bindingOf(token: string): string` (SHA-256 hex); `bindingMatches(token: string, binding: string): boolean`
   (constant time). `/account` shows the form only when mode `both`, session kind `local` and OIDC configured; its one
   action re-authenticates and starts `beginAuth({ purpose: 'link', next: '/account', binding, username })`. The callback
-  for `link` reads no session, re-seals the cookie with `iss`, `sub`, `preferredUsername` (keeping `exp`), and renders
+  for `link` reads no session, refuses a missing or stale `auth_time` (Task 8 `completeAuth`; cookie cleared, no
+  confirmation), re-seals the cookie with `iss`, `sub`, `preferredUsername` (keeping `started` and `exp`), and renders
   "You are linking <preferred_username> to <username>" (`your SSO account` when the claim is absent) with Confirm and
   Cancel posting to `/auth/link`. `POST /auth/link` checks `Origin` (UI-01), clears `commsgun_oidc` always, requires
   `purpose === 'link'` and `bindingMatches(locals.session.token, tx.binding)`, then 303 `/account?link=<linked |
@@ -593,9 +605,10 @@ it('bindingMatches is true only for the bound token');
 // e2e/account.spec.ts
 // mode both + local session: form shown; mode local, mode oidc, or an oidc-kind session: no form and a one-line reason
 // wrong password → "Incorrect password"; 5 failures share /login's budget: a 6th POST to /login or /account → 429
-// right password → IdP URL has prompt=login; with the stub issuer's live session set to another sub, the confirmation names
+// right password → IdP URL has prompt=login and max_age=0; with the stub issuer's live session set to another sub, the confirmation names
 //   the re-authenticated user, not the live one (conformance: link while another IdP session is live)
 // the callback request carried no commsgun_session (cross-site) and still rendered the confirmation
+// stub next({ auth_time: null }), and next({ auth_time: <2 min before the re-auth POST> }) → no confirmation, commsgun_oidc cleared, no identities call
 // Confirm → stub got POST /admin/v1/identities {"iss","sub"} with the session header; /account shows "SSO account linked"; commsgun_oidc cleared
 // Cancel → no identities call; "Linking cancelled"; cookie cleared
 // Confirm with STUB_SESSION_TOKEN_2 as the session → no identities call, "Linking failed. Try again."
@@ -616,7 +629,7 @@ it('bindingMatches is true only for the bound token');
 - Create: `api/internal/submission/message.go`
 - Modify: `api/internal/config/config.go` (`smtp_submission`, `send_window_seconds`, `AuthenticateSMTP`),
   `api/internal/enqueue/handler.go` (401 for an `smtp_submission` app), `api/internal/enqueue/submit.go`
-  (`SubmitWindowed`, Q2), `api/internal/enqueue/validate.go` (`ValidRecipient`)
+  (`SubmitWindowed`), `api/internal/enqueue/validate.go` (`ValidRecipient`)
 - Test: `api/internal/submission/message_test.go`, `api/internal/config/config_test.go`, `api/internal/enqueue/handler_test.go`
 
 **Interfaces:**
@@ -626,7 +639,7 @@ it('bindingMatches is true only for the bound token');
   - `enqueue.ValidRecipient(ch model.Channel, r string) bool` (renamed, same body).
   - `enqueue.SubmitWindowed(ctx, cfg, st Enqueuer, now time.Time, app *config.App, namespace, key string, body []byte,
     sourceIP string, window time.Duration) (Outcome, *Failure)` — as `SubmitNamespaced`, but `expires_at = now + window`
-    is applied after hashing; `SubmitNamespaced` calls it with 0 (unchanged behaviour). (Q2)
+    is applied after hashing; `SubmitNamespaced` calls it with 0 (unchanged behaviour) (spec 12.8; Q2 resolved).
   - `submission.Reply{ Code int; Enhanced [3]int; Text string }`; `submission.BuildRequest(raw []byte, mailFrom string,
     rcpts []string, app *config.App) (body []byte, key string, rej *Reply)` — the request JSON of spec 6.2 (`channel`
     email, `to` = `rcpts`, `from` = header `From` re-formatted with its display name, `subject` RFC 2047-decoded, `text`
@@ -722,8 +735,8 @@ Existing `main_test.go` helpers move from `run(…, enqAddr, admAddr)` to env va
 - Modify: `README.md` (Configuration: K3/U2 vars and `COMMSGUN_CONFIG` keys; a short "Accounts" section with the CLI
   verbs and the `docker compose run --rm -T commsgun-admin admin <verb>` shape), `docs/context-constitution.md`
   (CG-01 evidence: account JSON; CG-02 twins: `PasswordMinChars` ↔ `MIN_ADMIN_PASSWORD`, `SessionTokenBytes` ↔
-  `SESSION_TOKEN`; CG-06: smoke runs the API at `--memory 96m`; CG-08 evidence: `OIDC_*`, `smtp_submission`,
-  `send_window_seconds`; smoke-strings gotcha), `api/docs/context-constitution.md` (API-02: never edit `schema.sql` or an
+  `SESSION_TOKEN`, `AUTH_TIME_SKEW_MS` ↔ the SSO spec § 3 skew; CG-06: smoke runs the API at `--memory 96m`; CG-08
+  evidence: `OIDC_*`, `smtp_submission`, `send_window_seconds`; smoke-strings gotcha), `api/docs/context-constitution.md` (API-02: never edit `schema.sql` or an
   applied migration, add a numbered one; API-05 evidence: the CLI; API-07: admin's `hasher`; API-09: namespace `smtp`),
   `api/docs/context-constitution-findings.md` (migration row → Resolved), `docs/ui-context-constitution.md` (UI-05
   rewritten per spec 12.10; UI-02 `createApi(…, session)`; UI-01 adds `/auth/link`; UI-06 the stub's session gate and
@@ -747,13 +760,14 @@ Existing `main_test.go` helpers move from `run(…, enqAddr, admAddr)` to env va
 | # | Question | Plan's proposal | Blocks |
 |---|---|---|---|
 | Q1 | Values the spec leaves open: (a) argon2id salt and key length; (b) the account routes' body cap and its refusal (12.7 lists no 413); (c) a maximum `iss` length; (d) the UI's import retry interval; (e) the SMTP write timeout | (a) 16 B salt, 32 B key (RFC 9106); (b) `AccountMaxBodyBytes` 4096 (= `ProbeMaxBodyBytes`), empty 413 like the probe; (c) none beyond (b); (d) `IMPORT_RETRY_MS` 1000, no upper bound ("retry while unreachable"); (e) reuse `WriteTimeout` 30 s | Tasks 2, 5, 6, 11 |
-| Q2 | Spec 12.8 says a resent `Message-ID` with the same content is `250` (duplicate), but `SubmitNamespaced` hashes the whole request including `expires_at`, which the SMTP path derives from `now`, so a later resend hashes differently and answers `idempotency_conflict` (554) | Build the request without `expires_at`; `SubmitWindowed` applies `now + send_window` after hashing; HTTP and probe unchanged | Task 10, 11 |
+| Q2 | Spec 12.8 says a resent `Message-ID` with the same content is `250` (duplicate), but `SubmitNamespaced` hashes the whole request including `expires_at`, which the SMTP path derives from `now`, so a later resend hashes differently and answers `idempotency_conflict` (554) | **Resolved (owner, 2026-11-27):** the proposal stands: build the request without `expires_at`; `SubmitWindowed` applies `now + send_window` after hashing; HTTP and probe unchanged (spec 12.8) | — |
 | Q3 | Spec 12.8: `AUTH` before STARTTLS → `530 5.7.0`. go-smtp v0.26 answers `523 5.7.10` itself unless `AllowInsecureAuth` is on, which also advertises `AUTH` before TLS (inviting clients to send the key in clear) | Keep `AllowInsecureAuth` off and accept `523 5.7.10` for `AUTH`; amend the spec row. `MAIL` before STARTTLS stays `530 5.7.0` | Task 11 |
 | Q4 | Gaps in the 12.8 reply table: `MAIL` after STARTTLS but before `AUTH`; the 11th message on one connection; more `RCPT`s than the app's `per_minute`/`per_day` (enqueue answers `too_many_recipients_for_limit`, which the table maps to `451 4.3.0` "defect") | `530 5.7.0` (RFC 4954); `451 4.3.2`; refuse at `RCPT` beyond `min(10, per_minute, per_day)` with `452 4.5.3` | Task 10, 11 |
 | Q5 | "16 characters": Go can count code points, but the UI's `loadEnv` counts UTF-16 units (`v.length`); a non-ASCII `ADMIN_PASSWORD` could pass the UI and fail the import | Both count code points (`[...v].length` in the UI) | Task 2, 7 |
 | Q6 | `openid-client` 6 refuses a non-`https` issuer unless `allowInsecureRequests` is set; the e2e stub issuer is plain HTTP | `loadEnv` accepts `http:` only for host `localhost`/`127.0.0.1`, and only then the RP sets `allowInsecureRequests`. Alternative: an HTTPS stub with a CA made by `openssl` at test start and `NODE_EXTRA_CA_CERTS` | Task 8 |
-| Q7 | Link re-auth: spec 12.5 sends `prompt=login`; SSO spec S17 pairs it with `max_age=0` and a fresh `auth_time` | `prompt=login` only, as 12.5 says; no `auth_time` check | Task 8, 9 |
+| Q7 | Link re-auth: spec 12.5 sends `prompt=login`; SSO spec S17 pairs it with `max_age=0` and a fresh `auth_time` | **Resolved (owner, 2026-11-27; SSO spec § 3 "Linking"):** every link sends `prompt=login` and `max_age=0`; the callback refuses a missing `auth_time` or one before the flow's start minus `AUTH_TIME_SKEW_MS` (30 s), as a failed ID-token check (spec 12.5; Tasks 8, 9) | — |
 | Q8 | § 13 is a draft pending owner review before P5; this plan builds what it states | Review § 13 (and its residuals 1–7) before P5 | P5, not a task |
+| Q9 | SSO spec § 3 conformance: "an ID token on a key set older than 3600 s with the refresh failing". openid-client keeps its key-set cache per `Configuration` and ages it by its own clock; the stub issuer has no clock control, the plan finds no public control of that cache's age in openid-client 6, and `completeAuth` discovers on every call, so no cached set outlives one callback and the 300 s refetch cannot be driven in a test | Test it as a `jwks_uri` fetch that fails during `completeAuth` (Task 8) and rely on the per-call discovery for the age; no clock mechanism is added | Task 8 |
 
 **Readings the plan takes (correct any):** `ReauthMaxFailures` counts every failure on a session and a success does not
 reset it; `OIDC_AUTO_PROVISION` counts as set when present, even empty, and an empty `ADMIN_PASSWORD` counts as unset;

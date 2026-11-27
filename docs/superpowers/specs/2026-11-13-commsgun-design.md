@@ -7,7 +7,8 @@ Amended 2026-11-24 for single sign-on and the Authelia mail path (sections 12 an
 shared design is `davcs86/homelab-edge` `docs/superpowers/specs/2026-11-23-authelia-sso-respec.md` (decisions 4–7, 9,
 22, 23; § 3 app contract; § 5; § 9; phase P5). Until an image with section 12 ships and the edge sets `AUTH_MODE`, the
 hub behaves as sections 1–11 describe, except that the admin's password moves into the API's store on first start
-(12.6).
+(12.6). Amended 2026-11-27 (owner): link re-authentication by `auth_time` (12.5), signing-key freshness (12.4) and the
+SMTP send window applied after hashing (12.8).
 
 Items marked **(call)** are the designer's choices, not owner decisions — correct any of them.
 Items marked **(owner)** were decided by the owner in the design conversation.
@@ -679,12 +680,13 @@ The browser routes that accept a password are exactly `POST /login` and `POST /a
 ### 12.4 SSO login
 
 1. `GET /login/sso` (UI): authorization code flow with PKCE (S256), `state` and `nonce`, kept with the purpose
-   (`login`, or `link` from 12.5) and the `next` path (through `safeNext`: a same-origin path only) in a transaction
-   cookie `commsgun_oidc` (`HttpOnly; Secure; SameSite=Lax; Path=/auth`; 10 minutes; sealed with a key derived from
-   `SESSION_SECRET` alone) **(call)**.
+   (`login`, or `link` from 12.5), the `next` path (through `safeNext`: a same-origin path only) and the flow's start
+   time in a transaction cookie `commsgun_oidc` (`HttpOnly; Secure; SameSite=Lax; Path=/auth`; 10 minutes; sealed with
+   a key derived from `SESSION_SECRET` alone) **(call)**. 12.5 adds the session binding and the display username; this
+   cookie is the callback's only state (SSO spec § 3 "Callback state", owner 2026-11-27).
 2. `GET /auth/callback` (UI): checks `state`, exchanges the code (`client_secret_basic`), validates the ID token
-   (`alg` RS256 from the issuer's JWKS, `iss`, `aud`, `exp`, `nonce`). For purpose `login` it clears the transaction
-   cookie here, whether the login succeeds or not; for `link`, see 12.5.
+   (`alg` RS256 from the issuer's JWKS, `iss`, `aud`, `exp`, `nonce`; for `link` also `auth_time`, 12.5). For purpose
+   `login` it clears the transaction cookie here, whether the login succeeds or not; for `link`, see 12.5.
 3. `POST /admin/v1/sessions/oidc` (12.7) → 201, or 403 `not_linked` (no identity, or the user is disabled: one answer)
    **(call)**, or 403 `mode`. Email and name are not sent: commsgun stores neither. On 201 the UI sets the session
    cookie and answers **200**, never a redirect: a page that continues to `next` by meta refresh, with a Continue
@@ -696,9 +698,13 @@ The hook's public paths (`ui/src/hooks.server.ts#PUBLIC_PATHS`, today `/login`, 
 `POST /auth/link` (12.5). `/account` and `/auth/link` need a session.
 
 The relying party is `openid-client`, an exact-pinned devDependency (like CG-04; every UI package is a devDependency)
-**(call)**. Group gating (`commsgun`) is the IdP's job (SSO spec decision 6); commsgun does not read groups. The
-conformance cases of the SSO spec § 3 (bad `state`, wrong `iss`/`aud`, expired token, unlinked `sub`, replayed code,
-link while another IdP session is live) are UI tests against a stub issuer.
+**(call)**. It calls `enableNonRepudiationChecks`, so the ID token's signature is verified on the issuer's JWKS, which
+openid-client 6 (oauth4webapi) refetches once its copy is 300 s old, failing the attempt if that fetch fails: this meets
+the SSO spec § 3 signing-keys rule (no token on a key set older than 3600 s, no grace window; owner, 2026-11-27). Group
+gating (`commsgun`) is the IdP's job (SSO spec decision 6); commsgun does not read groups. The conformance cases of the
+SSO spec § 3 (bad `state`, wrong `iss`/`aud`, expired token, unlinked `sub`, replayed code, link while another IdP
+session is live, a missing or stale `auth_time` on a link, an ID token whose key-set fetch fails) are UI tests against a
+stub issuer (12.10).
 
 ### 12.5 Link SSO
 
@@ -708,15 +714,19 @@ Only in `both`, only for a session of kind `local`. The API enforces both on `PO
 
 1. **Re-auth.** The page's one form action, `POST /account`, takes the password and calls
    `POST /admin/v1/sessions/reauth`, which sets `reauth_at`; a wrong password counts towards `ReauthMaxFailures`
-   (12.3). On success the action starts 12.4 with purpose `link` and `prompt=login` (SSO spec S17); the transaction
-   cookie also holds the SHA-256 of the session token (the binding) and the account's username (for the confirmation
-   page) **(call)**. The link must be confirmed within 5 minutes of `reauth_at` (`ReauthWindow`) **(call)**.
+   (12.3). On success the action starts 12.4 with purpose `link`, `prompt=login` and `max_age=0` (SSO spec S17, § 3
+   "Linking"; owner, 2026-11-27); the transaction cookie also holds the SHA-256 of the session token (the binding) and
+   the account's username (for the confirmation page) **(call)**, beside the flow's start time (12.4). The link must be
+   confirmed within 5 minutes of `reauth_at` (`ReauthWindow`) **(call)**.
 2. **Callback.** For purpose `link`, `GET /auth/callback` validates as in 12.4 and reads no session: the
-   `SameSite=Strict` session cookie is absent when the IdP is on another site **(call)**. It then re-seals the
-   transaction cookie with the validated `iss`, `sub` and `preferred_username` (display only), keeping its purpose,
-   binding, username and original expiry, and answers 200 "You are linking <preferred_username> to <username>" with
-   Confirm and Cancel. Both post to `POST /auth/link` (same-origin, so the session cookie is sent; under
-   `Path=/auth`, so the transaction cookie is sent).
+   `SameSite=Strict` session cookie is absent when the IdP is on another site **(call)**. It also refuses (owner,
+   2026-11-27) an ID token without `auth_time`, or whose `auth_time` is earlier than the flow's start time minus 30 s
+   (`AUTH_TIME_SKEW_MS` in `ui/src/lib/server/constants.ts`, twin of the SSO spec § 3 skew, CG-02); that refusal is a
+   failed check like any other (the cookie is cleared, below). Otherwise it re-seals the transaction cookie with the
+   validated `iss`, `sub` and `preferred_username` (display only), keeping its purpose, binding, username, start time
+   and original expiry, and answers 200 "You are linking <preferred_username> to <username>" with Confirm and Cancel.
+   Both post to `POST /auth/link` (same-origin, so the session cookie is sent; under `Path=/auth`, so the transaction
+   cookie is sent).
 3. **Confirm.** `POST /auth/link` checks the origin, and that the request's session token hashes to the binding, so a
    link cannot reach a different session. Confirm calls `POST /admin/v1/identities
    {iss, sub}` with the session → 204; 409 `already_linked` if the pair belongs to anyone, or the user already has an
@@ -803,8 +813,10 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
 - **Auth.** `AUTH PLAIN` only: username = app id, password = that app's key (constant time), and only an app whose
   `COMMSGUN_CONFIG` entry has `smtp_submission: true` **(call)**. Failures get one reply for every cause. Such an app is
   refused on HTTP enqueue (401 `unauthorized`, as a wrong key), so its key works on SMTP only **(call)**.
-- **Mapping to the enqueue path.** Each `DATA` becomes one enqueue request through `SubmitNamespaced` with namespace
-  `smtp` (API-09), so 6.2 validation, app limits, one message per recipient and all-or-nothing hold unchanged:
+- **Mapping to the enqueue path.** Each `DATA` becomes one enqueue request through `SubmitWindowed` with namespace
+  `smtp` (API-09): `SubmitNamespaced` with the app's send window applied after the request is hashed (owner,
+  2026-11-27; HTTP enqueue and the probe unchanged), so 6.2 validation, app limits, one message per recipient and
+  all-or-nothing hold unchanged:
   - envelope `MAIL FROM` must be one of the app's allowed senders, and the header `From` must carry the same address
     (its display name is kept);
   - recipients come from `RCPT TO` only (1–10), each checked at `RCPT` with the enqueue path's recipient check
@@ -817,12 +829,13 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
     or `us-ascii` (absent means `us-ascii`) **(call)**; anything else (attachments, other parts or charsets) is
     refused;
   - `DATA` is at most K5 (`MaxBodyBytes`, `SIZE` advertised); the request built from it is not re-checked, since
-    decoding never makes a body larger than `DATA` and `SubmitNamespaced` has no size check **(call)**;
+    decoding never makes a body larger than `DATA` and `SubmitWindowed` has no size check **(call)**;
   - `Message-ID` is required; the idempotency key is the first 64 hex characters of its SHA-256, stored as
     `smtp/<hex>`, so a resend after a lost reply is a duplicate and no HTTP caller of the app can collide with it.
 - **Expiry.** A new per-app key `send_window_seconds` (default and maximum 86400, `MAX_SEND_WINDOW`) sets `expires_at`
   for SMTP submissions; the edge sets 3600 for `authelia`, so its bodies (subject included, 6.4) are gone within the
-  link's hour whatever the outcome.
+  link's hour whatever the outcome. The request is hashed without `expires_at`, so a resend minutes later hashes the
+  same and is a duplicate, not an `idempotency_conflict`.
 - **Replies**, at the command that fails; for `DATA`, from the enqueue outcome **(call)**:
 
   | Outcome | Reply |
@@ -873,11 +886,14 @@ username; the import's `imported`/`skipped`, its race-free single row, `/healthz
 refusing to start on a 401 or 422; each CLI verb, including `add`, and `disable` and `reset-password` deleting
 sessions; the link flow's re-auth window, session binding at `POST /auth/link`, a callback that arrives without the
 session cookie (a cross-site IdP), `already_linked`, confirmation and cookie clearing; the login callback's 200 page
-continuing to `next`; the conformance cases (12.4); the SMTP listener against a TLS client with a test CA: STARTTLS
-required, one reply for every bad credential, an `smtp_submission` app refused on HTTP enqueue, each row of the reply
-table, a duplicate `Message-ID`, the 1-hour window and body deletion at expiry; a migration from today's schema; logs
-with no address, subject, token or password. Smoke runs the API at the edge's 96m, so a hash over that limit fails it
-(12.1).
+continuing to `next`; the conformance cases (12.4), including a link whose ID token has no `auth_time` and one whose
+`auth_time` is more than 30 s before the flow's start (each refused at the callback, cookie cleared, no identity call;
+`prompt=login` and `max_age=0` on every link), and an ID token whose key-set fetch fails after the cached set aged out
+(the SSO attempt fails); the SMTP listener against a TLS client with a test CA: STARTTLS required, one reply for every
+bad credential, an `smtp_submission` app refused on HTTP enqueue, each row of the reply table, a duplicate `Message-ID`
+resent minutes later (still `250 2.0.0`), the 1-hour window and body deletion at expiry; a migration from today's
+schema; logs with no address, subject, token or password. Smoke runs the API at the edge's 96m, so a hash over that
+limit fails it (12.1).
 
 e2e authentication (UI-05 is rewritten in the build PR): the session is opaque, so there is no cookie to forge. The
 stub's `GET /admin/v1/session` accepts one fixed `fake-`-prefixed token, sized like the other stub fixtures, and
