@@ -56,6 +56,15 @@ const (
 	AuthPause               = 10 * time.Minute
 	ReadPoolMax             = 4
 	ProviderErrorNameMaxLen = 64
+
+	Argon2MemoryKiB         = 19456
+	Argon2Time              = 2
+	Argon2Threads           = 1
+	Argon2SaltBytes         = 16
+	Argon2KeyBytes          = 32
+	PasswordHashConcurrency = 1
+	PasswordMinChars        = 16
+	PasswordMaxBytes        = 1024
 )
 
 // BucketStep maps a stats range up to MaxRange onto a series bucket; the last step has no bound.
