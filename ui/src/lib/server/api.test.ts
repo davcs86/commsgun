@@ -11,7 +11,9 @@ const env: Env = {
 	sessionSecret: 's'.repeat(32),
 	adminApiToken: TOKEN,
 	apiBaseUrl: 'http://api:9201',
-	origin: 'https://x.test'
+	origin: 'https://x.test',
+	oidc: null,
+	oidcKey: Buffer.alloc(32)
 };
 const filters = parseFilters(
 	new URLSearchParams('range=1h&channel=email'),

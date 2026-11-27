@@ -1,4 +1,6 @@
+import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { OIDC_KEY_LABEL } from './constants';
 import { loadEnv } from './env';
 
 const valid = {
@@ -74,4 +76,62 @@ describe('loadEnv', () => {
 			expect(loadEnv({ ...valid, ORIGIN: origin }).origin).toBe('https://x.test');
 		}
 	);
+
+	it('has no OIDC block when the OIDC variables are unset or empty; oidcKey is derived from SESSION_SECRET', () => {
+		expect(loadEnv(valid).oidc).toBeNull();
+		expect(
+			loadEnv({ ...valid, OIDC_ISSUER: '', OIDC_CLIENT_ID: '', OIDC_CLIENT_SECRET: '' }).oidc
+		).toBeNull();
+		const key = createHmac('sha256', valid.SESSION_SECRET).update(OIDC_KEY_LABEL).digest();
+		expect(loadEnv(valid).oidcKey.equals(key)).toBe(true);
+	});
+});
+
+describe('loadEnv OIDC', () => {
+	const oidc: Record<string, string> = {
+		OIDC_ISSUER: 'https://issuer.example',
+		OIDC_CLIENT_ID: 'commsgun',
+		OIDC_CLIENT_SECRET: 'fake-oidc-client-secret-0000000000'
+	};
+
+	it.each(['OIDC_ISSUER', 'OIDC_CLIENT_ID', 'OIDC_CLIENT_SECRET'])(
+		'rejects %s alone (all or none)',
+		(key) => {
+			let message = '';
+			try {
+				loadEnv({ ...valid, [key]: oidc[key] });
+			} catch (e) {
+				message = (e as Error).message;
+			}
+			for (const other of Object.keys(oidc).filter((k) => k !== key)) {
+				expect(message).toContain(other);
+			}
+			expect(message).not.toContain(oidc[key]);
+		}
+	);
+
+	// No loopback exception.
+	it.each(['http://issuer.example', 'http://localhost:4182', 'http://127.0.0.1:4182'])(
+		'rejects OIDC_ISSUER=%s',
+		(issuer) => {
+			expect(() => loadEnv({ ...valid, ...oidc, OIDC_ISSUER: issuer })).toThrow('OIDC_ISSUER');
+		}
+	);
+
+	it.each(['false', '', 'true'])('rejects OIDC_AUTO_PROVISION=%s', (value) => {
+		expect(() => loadEnv({ ...valid, OIDC_AUTO_PROVISION: value })).toThrow('OIDC_AUTO_PROVISION');
+		expect(() => loadEnv({ ...valid, ...oidc, OIDC_AUTO_PROVISION: value })).toThrow(
+			'OIDC_AUTO_PROVISION'
+		);
+	});
+
+	it('defaults OIDC_SCOPES to "openid profile email"', () => {
+		expect(loadEnv({ ...valid, ...oidc }).oidc).toEqual({
+			issuer: oidc.OIDC_ISSUER,
+			clientId: oidc.OIDC_CLIENT_ID,
+			clientSecret: oidc.OIDC_CLIENT_SECRET,
+			scopes: 'openid profile email'
+		});
+		expect(loadEnv({ ...valid, ...oidc, OIDC_SCOPES: 'openid' }).oidc?.scopes).toBe('openid');
+	});
 });

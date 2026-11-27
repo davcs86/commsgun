@@ -5,7 +5,7 @@ import { importAdmin } from './lib/server/bootstrap';
 import { getEnv } from './lib/server/env';
 import { SESSION_COOKIE, SESSION_TOKEN } from './lib/server/constants';
 
-const PUBLIC_PATHS = new Set(['/login', '/logout', '/healthz']);
+const PUBLIC_PATHS = new Set(['/login', '/logout', '/healthz', '/login/sso', '/auth/callback']);
 
 // adapter-node awaits init before it listens, so /healthz waits for the import and a throw stops the process.
 export const init: ServerInit = async () => {

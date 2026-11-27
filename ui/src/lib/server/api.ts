@@ -33,6 +33,7 @@ type Endpoint =
 	| 'bootstrap_import'
 	| 'auth'
 	| 'sessions_local'
+	| 'sessions_oidc'
 	| 'session';
 
 type Body = Record<string, unknown>;
@@ -182,6 +183,8 @@ export function createApi(env: Env, fetchFn: typeof fetch, session?: string) {
 	}
 
 	const isUser = (u: unknown) => typeof u === 'object' && u !== null;
+	const isSession = (b: Body) =>
+		typeof b.token === 'string' && typeof b.expires_at === 'string' && isUser(b.user);
 	const always = () => true;
 
 	return {
@@ -199,14 +202,13 @@ export function createApi(env: Env, fetchFn: typeof fetch, session?: string) {
 				['local', 'oidc', 'both'].includes(b.mode as string)
 			),
 		createLocalSession: (username: string, password: string) =>
-			account<Session>(
-				'sessions_local',
-				'POST',
-				'sessions/local',
-				201,
-				(b) => typeof b.token === 'string' && typeof b.expires_at === 'string' && isUser(b.user),
-				{ username, password }
-			),
+			account<Session>('sessions_local', 'POST', 'sessions/local', 201, isSession, {
+				username,
+				password
+			}),
+		// Email and name are not sent: commsgun stores neither (spec 12.4).
+		createOidcSession: (iss: string, sub: string) =>
+			account<Session>('sessions_oidc', 'POST', 'sessions/oidc', 201, isSession, { iss, sub }),
 		session: () =>
 			account<SessionInfo>(
 				'session',

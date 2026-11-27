@@ -10,6 +10,8 @@ export const TEST_SESSION_SECRET = 'fake-session-secret-000000000000000';
 export const STUB_SESSION_TOKEN = 'fake-session-token-000000000000000000000000';
 export const STUB_SESSION_TOKEN_2 = 'fake-session-token-000000000000000000000002';
 export const STUB_USER = { id: 'fake-user-0001', username: 'admin', role: 'admin' } as const;
+// The only SSO subject the stub has linked (to STUB_USER), whatever the issuer.
+export const STUB_LINKED_SUB = 'fake-sub-0001';
 // Not 12 h, so a cookie lifetime that follows expires_at is told apart from a constant.
 export const STUB_SESSION_TTL_MS = 3 * 60 * 60 * 1000;
 export const AUTH_MODES = ['local', 'oidc', 'both'] as const;
@@ -18,6 +20,7 @@ export type AuthSettings = {
 	sessionsLocal?: 'unauthorized' | 'mode';
 };
 export type SessionCall = { method: string; session: string | null };
+export type OidcSessionBody = Record<string, unknown>;
 
 export const SCENARIOS = ['normal', 'empty', 'down', 'hostile', 'mixed', 'auth', 'window'] as const;
 export type Scenario = (typeof SCENARIOS)[number];
@@ -362,6 +365,7 @@ type State = {
 	auth: AuthSettings;
 	sessionCalls: SessionCall[];
 	issued: string[];
+	oidcSessions: OidcSessionBody[];
 };
 
 function probeOptions(mode: ProbeMode) {
@@ -464,6 +468,16 @@ async function sessionsLocal(state: State, req: IncomingMessage, res: ServerResp
 	return send(res, 201, { token: STUB_SESSION_TOKEN, expires_at: expires, user: STUB_USER });
 }
 
+async function sessionsOidc(state: State, req: IncomingMessage, res: ServerResponse) {
+	const body = JSON.parse((await readBody(req)) || '{}') as OidcSessionBody;
+	state.oidcSessions.push(body);
+	if (state.auth.mode === 'local') return send(res, 403, { error: 'mode' });
+	if (body.sub !== STUB_LINKED_SUB) return send(res, 403, { error: 'not_linked' });
+	const expires = new Date(Date.now() + STUB_SESSION_TTL_MS).toISOString();
+	state.issued.push(expires);
+	return send(res, 201, { token: STUB_SESSION_TOKEN, expires_at: expires, user: STUB_USER });
+}
+
 async function handleApi(state: State, req: IncomingMessage, res: ServerResponse, url: URL) {
 	const route = url.pathname.slice('/admin/v1/'.length);
 	const method = req.method ?? 'GET';
@@ -490,6 +504,7 @@ async function handleApi(state: State, req: IncomingMessage, res: ServerResponse
 	}
 	if (method === 'GET' && route === 'auth') return send(res, 200, { mode: state.auth.mode });
 	if (method === 'POST' && route === 'sessions/local') return sessionsLocal(state, req, res);
+	if (method === 'POST' && route === 'sessions/oidc') return sessionsOidc(state, req, res);
 	if (method === 'GET' && route === 'session') {
 		const expires = state.issued.at(-1) ?? new Date(Date.now() + STUB_SESSION_TTL_MS).toISOString();
 		return send(res, 200, { user: STUB_USER, kind: 'local', expires_at: expires });
@@ -509,7 +524,8 @@ export function startStub(port = STUB_PORT) {
 		imports: [],
 		auth: { mode: 'local' },
 		sessionCalls: [],
-		issued: []
+		issued: [],
+		oidcSessions: []
 	};
 	const server = createServer(async (req, res) => {
 		const url = new URL(req.url ?? '/', STUB_URL);
@@ -525,6 +541,9 @@ export function startStub(port = STUB_PORT) {
 			return send(res, 200, state.sessionCalls);
 		}
 		if (req.method === 'GET' && url.pathname === '/__issued') return send(res, 200, state.issued);
+		if (req.method === 'GET' && url.pathname === '/__oidc-sessions') {
+			return send(res, 200, state.oidcSessions);
+		}
 		if (req.method === 'POST' && url.pathname === '/__probe-mode') {
 			const body = JSON.parse((await readBody(req)) || '{}') as { mode?: string };
 			if (!(PROBE_MODES as readonly string[]).includes(body.mode ?? '')) return send(res, 400);
@@ -547,6 +566,7 @@ export function startStub(port = STUB_PORT) {
 			state.auth = { mode: 'local' };
 			state.sessionCalls = [];
 			state.issued = [];
+			state.oidcSessions = [];
 			return send(res, 204);
 		}
 		if (req.method === 'GET' && url.pathname === '/__requests') {
@@ -599,6 +619,11 @@ export async function sessionCalls(): Promise<SessionCall[]> {
 // The expires_at of every session the stub created, oldest first.
 export async function issuedSessions(): Promise<string[]> {
 	return (await (await fetch(`${STUB_URL}/__issued`)).json()) as string[];
+}
+
+// Every POST sessions/oidc body, oldest first.
+export async function oidcSessions(): Promise<OidcSessionBody[]> {
+	return (await (await fetch(`${STUB_URL}/__oidc-sessions`)).json()) as OidcSessionBody[];
 }
 
 export async function resetRequests(): Promise<void> {
