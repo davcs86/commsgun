@@ -1,4 +1,10 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import {
+	createCipheriv,
+	createDecipheriv,
+	createHash,
+	randomBytes,
+	timingSafeEqual
+} from 'node:crypto';
 
 // SSO spec § 3 "Callback state": the callback's only state.
 export type Transaction = {
@@ -55,4 +61,15 @@ export function openTransaction(
 	} catch {
 		return null;
 	}
+}
+
+// A link is bound to the session that re-authenticated (spec 12.5).
+export function bindingOf(token: string): string {
+	return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+export function bindingMatches(token: string, binding: string): boolean {
+	const want = Buffer.from(bindingOf(token), 'utf8');
+	const got = Buffer.from(binding, 'utf8');
+	return want.length === got.length && timingSafeEqual(want, got);
 }

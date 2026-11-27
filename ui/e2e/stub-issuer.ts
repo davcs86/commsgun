@@ -13,12 +13,14 @@ export const ISSUER_CLIENT_ID = 'commsgun';
 export const ISSUER_CLIENT_SECRET = 'fake-oidc-client-secret-0000000000';
 export const ISSUER_DEFAULT_SUB = 'fake-sub-0001';
 export const ISSUER_DEFAULT_USERNAME = 'fake-person';
+// The display name of whoever holds the live session (setLiveSession).
+export const ISSUER_LIVE_USERNAME = 'fake-live-person';
 const KID = 'fake-key-1';
 const TOKEN_TTL_S = 300;
 
 export type IssuerClaims = {
 	sub: string;
-	preferred_username: string;
+	preferred_username: string | null;
 	iss: string;
 	aud: string;
 	exp: number;
@@ -53,9 +55,14 @@ export function createIssuer(issuerUrl: string) {
 	let isDown = false;
 
 	function idToken(claims: IssuerClaims): string {
-		const { alg, auth_time: authTime, ...rest } = claims;
+		const { alg, auth_time: authTime, preferred_username: name, ...rest } = claims;
 		const now = Math.floor(Date.now() / 1000);
-		const payload = { ...rest, iat: now, ...(authTime === null ? {} : { auth_time: authTime }) };
+		const payload = {
+			...rest,
+			iat: now,
+			...(name === null ? {} : { preferred_username: name }),
+			...(authTime === null ? {} : { auth_time: authTime })
+		};
 		const header = alg === 'none' ? { alg, typ: 'JWT' } : { alg, typ: 'JWT', kid: KID };
 		const input = `${b64(header)}.${b64(payload)}`;
 		const signature =
@@ -86,7 +93,7 @@ export function createIssuer(issuerUrl: string) {
 		const live = q.get('prompt') === 'login' ? null : liveSession;
 		const claims: IssuerClaims = {
 			sub: live ?? ISSUER_DEFAULT_SUB,
-			preferred_username: ISSUER_DEFAULT_USERNAME,
+			preferred_username: live === null ? ISSUER_DEFAULT_USERNAME : ISSUER_LIVE_USERNAME,
 			iss: issuerUrl,
 			aud: ISSUER_CLIENT_ID,
 			exp: now + TOKEN_TTL_S,
@@ -135,8 +142,9 @@ export function createIssuer(issuerUrl: string) {
 	async function control(name: string, req: Request): Promise<Response> {
 		const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 		if (name === 'next') api.next(body as Partial<IssuerClaims>);
-		else if (name === 'live-session' && typeof body.sub === 'string') api.setLiveSession(body.sub);
-		else if (name === 'down' && typeof body.on === 'boolean') api.down(body.on);
+		else if (name === 'live-session' && (typeof body.sub === 'string' || body.sub === null)) {
+			api.setLiveSession(body.sub);
+		} else if (name === 'down' && typeof body.on === 'boolean') api.down(body.on);
 		else return new Response(null, { status: 400 });
 		return new Response(null, { status: 204 });
 	}
@@ -166,11 +174,12 @@ export function createIssuer(issuerUrl: string) {
 			if (req.method === 'POST' && url.pathname === '/token') return token(req);
 			return new Response(null, { status: 404 });
 		},
-		// Overrides for the next code only; `auth_time: null` omits the claim.
+		// Overrides for the next code only; `auth_time` or `preferred_username` null omits that claim.
 		next(claims: Partial<IssuerClaims>): void {
 			pending = { ...claims };
 		},
-		setLiveSession(sub: string): void {
+		// null ends the live session.
+		setLiveSession(sub: string | null): void {
 			liveSession = sub;
 		},
 		down(on: boolean): void {
@@ -222,6 +231,16 @@ function makeTls(): { key: Buffer; cert: Buffer } {
 	};
 }
 
+// prompt=login makes a real IdP show its own page, so the callback is a navigation this site starts:
+// cross-site for the UI's Strict cookie. createIssuer keeps the bare 302 for the unit tests.
+function signInPage(url: URL, r: Response): string | null {
+	if (url.pathname !== '/authorize' || url.searchParams.get('prompt') !== 'login') return null;
+	const location = r.headers.get('location');
+	if (r.status !== 302 || !location) return null;
+	const href = location.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+	return `<!doctype html><meta http-equiv="refresh" content="0; url=${href}"><title>Sign in</title>`;
+}
+
 export function startIssuer() {
 	const issuer = createIssuer(ISSUER_URL);
 	const server = createServer(makeTls(), async (req, res) => {
@@ -238,6 +257,12 @@ export function startIssuer() {
 				body: method === 'GET' || method === 'HEAD' ? undefined : Buffer.concat(chunks)
 			})
 		);
+		const page = signInPage(new URL(req.url ?? '/', ISSUER_URL), r);
+		if (page) {
+			res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+			res.end(page);
+			return;
+		}
 		res.writeHead(r.status, Object.fromEntries(r.headers));
 		res.end(Buffer.from(await r.arrayBuffer()));
 	});

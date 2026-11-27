@@ -6,7 +6,7 @@ export const STUB_URL = `http://127.0.0.1:${STUB_PORT}`;
 export const STUB_TOKEN = 'fake-admin-api-token-00000000000000';
 export const TEST_ADMIN_PASSWORD = 'fake-admin-password-0000';
 export const TEST_SESSION_SECRET = 'fake-session-secret-000000000000000';
-// The only session the stub accepts; both tokens have the API's shape (43 base64url characters).
+// The sessions the stub accepts, both of STUB_USER; each has the API's shape (43 base64url characters).
 export const STUB_SESSION_TOKEN = 'fake-session-token-000000000000000000000000';
 export const STUB_SESSION_TOKEN_2 = 'fake-session-token-000000000000000000000002';
 export const STUB_USER = { id: 'fake-user-0001', username: 'admin', role: 'admin' } as const;
@@ -18,8 +18,11 @@ export const AUTH_MODES = ['local', 'oidc', 'both'] as const;
 export type AuthSettings = {
 	mode: (typeof AUTH_MODES)[number];
 	sessionsLocal?: 'unauthorized' | 'mode';
+	sessionKind?: 'local' | 'oidc';
+	identities?: 'already_linked' | 'reauth_required';
 };
 export type SessionCall = { method: string; session: string | null };
+export type IdentityCall = { session: string | null; body: Record<string, unknown> };
 export type OidcSessionBody = Record<string, unknown>;
 
 export const SCENARIOS = ['normal', 'empty', 'down', 'hostile', 'mixed', 'auth', 'window'] as const;
@@ -366,6 +369,8 @@ type State = {
 	sessionCalls: SessionCall[];
 	issued: string[];
 	oidcSessions: OidcSessionBody[];
+	reauthed: Set<string>;
+	identityCalls: IdentityCall[];
 };
 
 function probeOptions(mode: ProbeMode) {
@@ -478,6 +483,40 @@ async function sessionsOidc(state: State, req: IncomingMessage, res: ServerRespo
 	return send(res, 201, { token: STUB_SESSION_TOKEN, expires_at: expires, user: STUB_USER });
 }
 
+// Mirrors the API's re-auth and link refusals (spec 12.7): mode, then session_kind.
+function linkRefusal(state: State, res: ServerResponse): boolean {
+	if (state.auth.mode !== 'both') send(res, 403, { error: 'mode' });
+	else if (state.auth.sessionKind === 'oidc') send(res, 403, { error: 'session_kind' });
+	else return false;
+	return true;
+}
+
+async function reauth(state: State, req: IncomingMessage, res: ServerResponse, session: string) {
+	const body = JSON.parse((await readBody(req)) || '{}') as Record<string, unknown>;
+	if (linkRefusal(state, res)) return;
+	if (body.password !== TEST_ADMIN_PASSWORD)
+		return send(res, 401, { error: 'invalid_credentials' });
+	state.reauthed.add(session);
+	return send(res, 204);
+}
+
+async function identities(
+	state: State,
+	req: IncomingMessage,
+	res: ServerResponse,
+	session: string
+) {
+	const body = JSON.parse((await readBody(req)) || '{}') as Record<string, unknown>;
+	state.identityCalls.push({ session, body });
+	if (linkRefusal(state, res)) return;
+	if (state.auth.identities === 'already_linked')
+		return send(res, 409, { error: 'already_linked' });
+	if (state.auth.identities === 'reauth_required' || !state.reauthed.has(session)) {
+		return send(res, 403, { error: 'reauth_required' });
+	}
+	return send(res, 204);
+}
+
 async function handleApi(state: State, req: IncomingMessage, res: ServerResponse, url: URL) {
 	const route = url.pathname.slice('/admin/v1/'.length);
 	const method = req.method ?? 'GET';
@@ -500,14 +539,23 @@ async function handleApi(state: State, req: IncomingMessage, res: ServerResponse
 	if (req.headers.authorization !== `Bearer ${STUB_TOKEN}`) return send(res, 401);
 	if (!UNGATED.has(route)) {
 		if (route === 'session' && method === 'DELETE') return send(res, 204);
-		if (session !== STUB_SESSION_TOKEN) return send(res, 401, { error: 'session' });
+		if (session !== STUB_SESSION_TOKEN && session !== STUB_SESSION_TOKEN_2) {
+			return send(res, 401, { error: 'session' });
+		}
 	}
 	if (method === 'GET' && route === 'auth') return send(res, 200, { mode: state.auth.mode });
 	if (method === 'POST' && route === 'sessions/local') return sessionsLocal(state, req, res);
 	if (method === 'POST' && route === 'sessions/oidc') return sessionsOidc(state, req, res);
 	if (method === 'GET' && route === 'session') {
 		const expires = state.issued.at(-1) ?? new Date(Date.now() + STUB_SESSION_TTL_MS).toISOString();
-		return send(res, 200, { user: STUB_USER, kind: 'local', expires_at: expires });
+		const kind = state.auth.sessionKind ?? 'local';
+		return send(res, 200, { user: STUB_USER, kind, expires_at: expires });
+	}
+	if (method === 'POST' && route === 'sessions/reauth') {
+		return reauth(state, req, res, String(session));
+	}
+	if (method === 'POST' && route === 'identities') {
+		return identities(state, req, res, String(session));
 	}
 	if (method === 'POST' && route === 'probes') return handleProbe(state, req, res);
 	if (method === 'GET') return handleAdmin(state, res, url, route);
@@ -525,7 +573,9 @@ export function startStub(port = STUB_PORT) {
 		auth: { mode: 'local' },
 		sessionCalls: [],
 		issued: [],
-		oidcSessions: []
+		oidcSessions: [],
+		reauthed: new Set(),
+		identityCalls: []
 	};
 	const server = createServer(async (req, res) => {
 		const url = new URL(req.url ?? '/', STUB_URL);
@@ -534,7 +584,16 @@ export function startStub(port = STUB_PORT) {
 			const body = JSON.parse((await readBody(req)) || '{}') as Partial<AuthSettings>;
 			if (!(AUTH_MODES as readonly string[]).includes(body.mode ?? '')) return send(res, 400);
 			if (![undefined, 'unauthorized', 'mode'].includes(body.sessionsLocal)) return send(res, 400);
-			state.auth = { mode: body.mode as AuthSettings['mode'], sessionsLocal: body.sessionsLocal };
+			if (![undefined, 'local', 'oidc'].includes(body.sessionKind)) return send(res, 400);
+			if (![undefined, 'already_linked', 'reauth_required'].includes(body.identities)) {
+				return send(res, 400);
+			}
+			state.auth = {
+				mode: body.mode as AuthSettings['mode'],
+				sessionsLocal: body.sessionsLocal,
+				sessionKind: body.sessionKind,
+				identities: body.identities
+			};
 			return send(res, 204);
 		}
 		if (req.method === 'GET' && url.pathname === '/__session-calls') {
@@ -543,6 +602,9 @@ export function startStub(port = STUB_PORT) {
 		if (req.method === 'GET' && url.pathname === '/__issued') return send(res, 200, state.issued);
 		if (req.method === 'GET' && url.pathname === '/__oidc-sessions') {
 			return send(res, 200, state.oidcSessions);
+		}
+		if (req.method === 'GET' && url.pathname === '/__identities') {
+			return send(res, 200, state.identityCalls);
 		}
 		if (req.method === 'POST' && url.pathname === '/__probe-mode') {
 			const body = JSON.parse((await readBody(req)) || '{}') as { mode?: string };
@@ -567,6 +629,8 @@ export function startStub(port = STUB_PORT) {
 			state.sessionCalls = [];
 			state.issued = [];
 			state.oidcSessions = [];
+			state.reauthed = new Set();
+			state.identityCalls = [];
 			return send(res, 204);
 		}
 		if (req.method === 'GET' && url.pathname === '/__requests') {
@@ -624,6 +688,11 @@ export async function issuedSessions(): Promise<string[]> {
 // Every POST sessions/oidc body, oldest first.
 export async function oidcSessions(): Promise<OidcSessionBody[]> {
 	return (await (await fetch(`${STUB_URL}/__oidc-sessions`)).json()) as OidcSessionBody[];
+}
+
+// Every POST identities that passed the bearer and session gate, oldest first.
+export async function identityCalls(): Promise<IdentityCall[]> {
+	return (await (await fetch(`${STUB_URL}/__identities`)).json()) as IdentityCall[];
 }
 
 export async function resetRequests(): Promise<void> {

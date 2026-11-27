@@ -39,6 +39,9 @@
 		<a href="/messages{messagesQuery}" class={buttonVariants({ variant: 'ghost', size: 'sm' })}
 			>Messages</a
 		>
+		<a href={resolve('/account')} class={buttonVariants({ variant: 'ghost', size: 'sm' })}
+			>Account</a
+		>
 		<ProbeDialog />
 		<Button
 			variant="ghost"

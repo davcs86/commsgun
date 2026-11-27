@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { OIDC_TX_TTL_MS } from './constants';
-import { openTransaction, sealTransaction, type Transaction } from './oidc-cookie';
+import {
+	bindingMatches,
+	bindingOf,
+	openTransaction,
+	sealTransaction,
+	type Transaction
+} from './oidc-cookie';
 
 const NOW = 1_800_000_000_000;
 const KEY = Buffer.alloc(32, 7);
@@ -54,5 +60,24 @@ describe('transaction cookie', () => {
 		['not base64url', '!'.repeat(64)]
 	])('%s → null', (_, value) => {
 		expect(openTransaction(KEY, value, NOW)).toBeNull();
+	});
+});
+
+describe('session binding', () => {
+	const TOKEN = 'fake-session-token-000000000000000000000000';
+	const OTHER = 'fake-session-token-000000000000000000000002';
+
+	it('bindingOf is the SHA-256 hex of the token', () => {
+		expect(bindingOf(TOKEN)).toMatch(/^[0-9a-f]{64}$/);
+		expect(bindingOf(TOKEN)).not.toBe(bindingOf(OTHER));
+	});
+
+	it('bindingMatches is true only for the bound token', () => {
+		const binding = bindingOf(TOKEN);
+		expect(bindingMatches(TOKEN, binding)).toBe(true);
+		expect(bindingMatches(OTHER, binding)).toBe(false);
+		for (const junk of ['', binding.slice(1), binding + '0', binding.toUpperCase(), TOKEN]) {
+			expect(bindingMatches(TOKEN, junk)).toBe(false);
+		}
 	});
 });

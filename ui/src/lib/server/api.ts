@@ -34,6 +34,8 @@ type Endpoint =
 	| 'auth'
 	| 'sessions_local'
 	| 'sessions_oidc'
+	| 'sessions_reauth'
+	| 'identities'
 	| 'session';
 
 type Body = Record<string, unknown>;
@@ -221,6 +223,10 @@ export function createApi(env: Env, fetchFn: typeof fetch, session?: string) {
 					isUser(b.user)
 			),
 		deleteSession: () => account<null>('session', 'DELETE', 'session', 204, always),
+		reauth: (password: string) =>
+			account<null>('sessions_reauth', 'POST', 'sessions/reauth', 204, always, { password }),
+		linkIdentity: (iss: string, sub: string) =>
+			account<null>('identities', 'POST', 'identities', 204, always, { iss, sub }),
 		probeOptions: () => call<ProbeOptions>('probe', 'probes'),
 		sendProbe,
 		stats: (f: Filters) => call<Stats>('stats', 'stats', toApiParams(f)),
