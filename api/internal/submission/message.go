@@ -98,13 +98,13 @@ func BuildRequest(raw []byte, mailFrom string, rcpts []string, app *config.App) 
 	if err != nil || strings.ContainsAny(subject, "\r\n") || !utf8.ValidString(subject) {
 		return refuse(replyContent)
 	}
-	req := request{Channel: string(model.ChannelEmail), To: rcpts, From: from.String(), Subject: subject}
+	req := request{Channel: string(model.ChannelEmail), To: rcpts, From: formatAddr(from), Subject: subject}
 	if v := h["Reply-To"]; len(v) == 1 {
 		a, err := mail.ParseAddress(v[0])
 		if err != nil {
 			return refuse(replyContent)
 		}
-		s := a.String()
+		s := formatAddr(a)
 		req.ReplyTo = &s
 	}
 	if !readBody(h.Get("Content-Type"), h.Get("Content-Transfer-Encoding"), h.Get("Content-Disposition"), msg.Body, &req) {
@@ -115,6 +115,14 @@ func BuildRequest(raw []byte, mailFrom string, rcpts []string, app *config.App) 
 	}
 	sum := sha256.Sum256([]byte(id))
 	return body, hex.EncodeToString(sum[:]), nil
+}
+
+// formatAddr keeps a bare address bare; mail.Address.String would add angle brackets.
+func formatAddr(a *mail.Address) string {
+	if a.Name == "" {
+		return a.Address
+	}
+	return a.String()
 }
 
 func refuse(r Reply) ([]byte, string, *Reply) { return nil, "", &r }

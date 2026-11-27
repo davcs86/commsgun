@@ -118,6 +118,15 @@ func TestBuildPlainAndAlternative(t *testing.T) {
 	if str(b.Text) != "plain" || str(b.HTML) != "<p>html</p>" {
 		t.Fatalf("alternative: text %q html %q", str(b.Text), str(b.HTML))
 	}
+	for h, want := range map[string]string{
+		"Reply-To: ops@example.com":            "ops@example.com",
+		"Reply-To: <ops@example.com>":          "ops@example.com",
+		"Reply-To: Ops Desk <ops@example.com>": `"Ops Desk" <ops@example.com>`,
+	} {
+		if got := str(build(t, msg("x", base(h)...)).ReplyTo); got != want {
+			t.Errorf("%s: reply_to %q, want %q", h, got, want)
+		}
+	}
 	b = build(t, msg("<p>only</p>", base("Content-Type: text/html; charset=us-ascii")...))
 	if b.Text != nil || str(b.HTML) != "<p>only</p>" {
 		t.Fatalf("html only: %+v", b)
@@ -215,12 +224,16 @@ func TestHeaderFromMustMatchEnvelope(t *testing.T) {
 	if _, _, rej := BuildRequest(msg("x", base()...), "someone@example.com", []string{rcpt}, testApp()); rej == nil || *rej != replyNotAllowed {
 		t.Errorf("envelope not an allowed sender: %+v", rej)
 	}
-	for name, c := range map[string]struct{ from, wantName string }{
-		"other case":   {"From: Authelia Bot <AUTHELIA@Example.COM>", "Authelia Bot"},
-		"no name":      {"From: authelia@example.com", ""},
-		"encoded name": {"From: =?utf-8?q?J=C3=BCrgen?= <authelia@example.com>", "Jürgen"},
+	for name, c := range map[string]struct{ from, wantName, wantFrom string }{
+		"other case":   {"From: Authelia Bot <AUTHELIA@Example.COM>", "Authelia Bot", `"Authelia Bot" <AUTHELIA@Example.COM>`},
+		"no name":      {"From: authelia@example.com", "", "authelia@example.com"},
+		"bare, angled": {"From: <authelia@example.com>", "", "authelia@example.com"},
+		"encoded name": {"From: =?utf-8?q?J=C3=BCrgen?= <authelia@example.com>", "Jürgen", "=?utf-8?q?J=C3=BCrgen?= <authelia@example.com>"},
 	} {
 		b := build(t, msg("x", append([]string{c.from}, rest...)...))
+		if b.From != c.wantFrom {
+			t.Errorf("%s: from %q, want %q", name, b.From, c.wantFrom)
+		}
 		a, err := mail.ParseAddress(b.From)
 		if err != nil || !strings.EqualFold(a.Address, envFrom) || a.Name != c.wantName {
 			t.Errorf("%s: from %q (%v)", name, b.From, err)
@@ -257,14 +270,17 @@ func TestSubjectRFC2047(t *testing.T) {
 		"Subject: =?UTF-8?B?UmVzZXQgeW91ciBwYXNzd29yZCDinJM=?=":   "Reset your password ✓",
 		"Subject: =?utf-8?q?R=C3=A9initialiser?= le mot de passe": "Réinitialiser le mot de passe",
 		"Subject: =?utf-8?q?part_one?=\r\n =?utf-8?q?_part_two?=": "part one part two",
-		"Subject: plain words":          "plain words",
-		"Subject: =?us-ascii?q?ascii?=": "ascii",
+		"Subject: plain words":             "plain words",
+		"Subject: =?us-ascii?q?ascii?=":    "ascii",
+		"Subject: =?iso-8859-1?q?caf=E9?=": "café",
 	} {
 		h := append(append(append([]string{}, head...), raw), tail...)
 		if got := build(t, msg("x", h...)).Subject; got != want {
 			t.Errorf("%q: subject %q, want %q", raw, got, want)
 		}
 	}
+	koi8 := append(append(append([]string{}, head...), "Subject: =?koi8-r?b?8NLJ18XU?="), tail...)
+	refused(t, "koi8-r subject", msg("x", koi8...), replyContent)
 }
 
 // queued/duplicate 250 2.0.0; channel_not_allowed, sender_not_allowed 550 5.7.1;
