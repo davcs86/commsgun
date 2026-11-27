@@ -631,11 +631,12 @@ embedded, applied at start, never reverted, so an image is never rolled back pas
 | `identities` | `user_id`, `issuer`, `subject`, created; unique on `(issuer, subject)`, at most one per user and issuer **(call)** |
 | `sessions` | SHA-256 of a 32-byte random token, `user_id`, `kind` (`local` \| `oidc`), created, `expires_at`, `reauth_at` and `reauth_failures` (12.5) |
 
-Every user keeps a local password (break-glass). Passwords: 16 characters (the `ADMIN_PASSWORD` minimum, CG-02) to
-1024 bytes, argon2id **(call)**.
+Every user keeps a local password (break-glass). Passwords: 16 code points (the `ADMIN_PASSWORD` minimum, CG-02;
+the UI counts `[...v].length`, not UTF-16 units; owner, 2026-11-27) to 1024 bytes, argon2id **(call)**.
 
 **Hashing within the memory ceiling (CG-06).** argon2id with m = 19 MiB, t = 2, p = 1 (`Argon2MemoryKiB` 19456,
-`Argon2Time` 2, `Argon2Threads` 1 in `constants.go`), stored as a PHC string so old hashes still verify after a
+`Argon2Time` 2, `Argon2Threads` 1, a 16-byte salt `Argon2SaltBytes` and a 32-byte key `Argon2KeyBytes` in
+`constants.go`; owner, 2026-11-27), stored as a PHC string so old hashes still verify after a
 parameter change **(call)**. At most one hash runs at a time (`PasswordHashConcurrency` 1); the others wait within
 their request's context **(call)**. Smoke covers the ceiling: it runs the API container with `--memory 96m`, the
 edge's `mem_limit` (smoke runs at 256m today; `scripts/smoke.sh` and CG-06 change in the build PR), and its UI login now verifies
@@ -749,13 +750,14 @@ and logout are the dashboard's only writes besides the probe (section 2 amended)
 - **Import (upgrade safety).** Today only the UI holds `ADMIN_PASSWORD`, and the edge's bump bot changes digests only
   (SSO spec F12). So the **UI** imports: its `init` hook, if `ADMIN_PASSWORD` is set, calls
   `POST /admin/v1/bootstrap/import` with username `admin`, which creates that user only while `users` is empty and
-  answers `imported` or `skipped` **(call)**. `init` awaits the import, retrying while the API is unreachable or
-  answers 5xx; a 401 (`unauthorized`: the `ADMIN_API_TOKEN`s differ) or a 422 (`invalid_password`) makes `init` throw,
+  answers `imported` or `skipped` **(call)**. `init` awaits the import, retrying every second (`IMPORT_RETRY_MS` 1000 in
+  `ui/src/lib/server/constants.ts`, no upper bound; owner, 2026-11-27) while the API is unreachable or answers 5xx; a
+  401 (`unauthorized`: the `ADMIN_API_TOKEN`s differ) or a 422 (`invalid_password`) makes `init` throw,
   so the UI refuses to start and the misconfiguration is loud; any other non-200 answer also makes `init` throw
   **(call)**. The UI's `/healthz` does not answer 200 until
   the import has finished (U1 amended), so smoke's `wait_ok "ui healthz"` and the edge's
   healthcheck gate the first login on it. `ADMIN_PASSWORD` is optional: absent, no import; present, still at least 16
-  characters or the UI refuses to start. After a `skipped`, the UI logs once that `ADMIN_PASSWORD` is ignored; the
+  code points or the UI refuses to start. After a `skipped`, the UI logs once that `ADMIN_PASSWORD` is ignored; the
   edge retires `commsgun_admin_password` in the cutover change.
 - **CLI** in the API binary, `commsgun-api admin <verb>`: it reads only `DATA_DIR`, opens no socket and needs no
   network; the password comes on stdin, never in argv. Verbs: `create <username>` (only while `users` is empty: with
@@ -781,8 +783,10 @@ The three hand-written copies of this JSON change together (CG-01: the Go produc
 `ui/e2e/stub-api.ts`). `User` is `{"id": "<uuid>", "username": "…", "role": "admin"}`. `Session` is
 `{"token": "<32 random bytes, base64url, unpadded>", "expires_at": "<RFC 3339 UTC>", "user": User}`; the token is
 returned only at creation and never logged. Request bodies are decoded strictly, as the probe's (API-11): malformed →
-422 `invalid_json`, an unknown field → 422 `unknown_field`, each with `field`. `iss` must be an `https` URL and `sub`
-1–255 bytes, else 422 `invalid_identity` (limits in `constants.go`) **(call)**.
+422 `invalid_json`, an unknown field → 422 `unknown_field`, each with `field`; a body over `AccountMaxBodyBytes`
+(4096, equal to `ProbeMaxBodyBytes`) → 413 with an empty body, as the probe (owner, 2026-11-27). `iss` must be an
+`https` URL and `sub` 1–255 bytes, else 422 `invalid_identity` (limits in `constants.go`; `iss` has no length limit
+of its own beyond the body cap) **(call)**.
 
 | Endpoint | Session | Request | Success | Refusals |
 |---|---|---|---|---|
@@ -820,7 +824,8 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
   all-or-nothing hold unchanged:
   - envelope `MAIL FROM` must be one of the app's allowed senders, and the header `From` must carry the same address
     (its display name is kept);
-  - recipients come from `RCPT TO` only (1–10), each checked at `RCPT` with the enqueue path's recipient check
+  - recipients come from `RCPT TO` only (1 to `min(10, per_minute, per_day)` of the app), each checked at `RCPT`
+    with the enqueue path's recipient check
     (`validate.go#validRecipient`), so `invalid_recipient` cannot reach `DATA`; `To` and `Cc` headers are not used,
     and `Bcc` is never forwarded;
   - `Subject` is RFC 2047-decoded; `Reply-To`, if present, must be one address and becomes `reply_to`; other headers
@@ -842,18 +847,21 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
   | Outcome | Reply |
   |---|---|
   | Queued, or a duplicate `Message-ID` with the same content | `250 2.0.0` |
-  | `AUTH` or `MAIL` before STARTTLS | `530 5.7.0` |
+  | `MAIL` before STARTTLS, or after STARTTLS but before `AUTH` (RFC 4954) | `530 5.7.0` |
+  | `AUTH` before STARTTLS (go-smtp's `AllowInsecureAuth` stays off, so `AUTH` is not advertised before TLS; owner, 2026-11-27) | `523 5.7.10` |
   | Bad credentials, any cause | `535 5.7.8` |
   | `MAIL FROM` not an allowed sender; header `From` differs; `channel_not_allowed` | `550 5.7.1` |
   | Malformed `RCPT TO` address | `553 5.1.3` |
-  | An 11th `RCPT TO` | `452 4.5.3` |
+  | An `RCPT TO` beyond `min(10, per_minute, per_day)` of the app (so `too_many_recipients_for_limit` cannot reach `DATA`) | `452 4.5.3` |
   | `DATA` over `SIZE` | `552 5.3.4` |
   | Unsupported content, no `Message-ID`, a bad `Reply-To`, a refused subject (CR/LF, over 998), `body_required` (no non-empty part), `idempotency_conflict` (same `Message-ID`, other content) | `554 5.6.0` |
   | `rate_limited` | `451 4.7.1` |
-  | The enqueue path's 503 (queue full, too many in flight, store busy), or over the SMTP session cap | `451 4.3.2` |
+  | The enqueue path's 503 (queue full, too many in flight, store busy), over the SMTP session cap, or the 11th message on one connection | `451 4.3.2` |
   | Any other enqueue failure (`invalid_json`, `unknown_field`: the listener built a bad request) | `451 4.3.0`, logged as a defect |
 
-  At most 8 concurrent sessions, 60 s read timeout, 10 messages per connection **(call)**; all in `constants.go`.
+  At most 8 concurrent sessions, 60 s read timeout, 10 messages per connection **(call)** (`SMTPMaxSessions`,
+  `SMTPReadTimeout`, `SMTPMaxMessagesPerConn`); the write timeout is the HTTP listeners' `WriteTimeout` (30 s; owner,
+  2026-11-27); all in `constants.go`.
 - **Logs** carry the session outcome, the app (only after a successful `AUTH`; never the attempted username), counts
   and the reply code only: never an address, subject, `Message-ID` or body (Rule 4).
 - **Dependencies.** The SMTP server is `github.com/emersion/go-smtp` with `github.com/emersion/go-sasl`, and argon2id
@@ -871,7 +879,7 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
 | UI | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (secret) | 12.2; all or none |
 | UI | `OIDC_SCOPES` | optional; default `openid profile email` |
 | UI | `OIDC_AUTO_PROVISION` | refused if set (12.2) |
-| UI | `ADMIN_PASSWORD` | optional, import-only (12.6); if set, at least 16 characters (supersedes 7.5) |
+| UI | `ADMIN_PASSWORD` | optional, import-only (12.6); if set, at least 16 code points (supersedes 7.5) |
 | UI | `ORIGIN` | follows the hostname: `https://commsgun.public.<domain>` (supersedes 7.5) |
 
 `COMMSGUN_CONFIG` gains, per app, `smtp_submission` (default `false`) and `send_window_seconds` (CG-08: the edge and

@@ -32,18 +32,20 @@ is the plan's proposal, not a decision.
 - Upgrade safety: an image built at any task boundary keeps today's behaviour with today's edge env: `AUTH_MODE` unset =
   `local`; `ENQUEUE_ADDR` `:9200`, `ADMIN_ADDR` `:9201`; `SMTP_ADDR` unset = no SMTP listener; OIDC unset = no SSO.
 - `AUTH_MODE` is read by the API only: `local` (default) | `oidc` | `both`; any other value refuses to start.
-- Users: `username` 3–32 of `a-z0-9._-`, unique, permanent, never reused; `role` `admin` only. Passwords 16 characters
-  (Q5) to 1024 bytes, argon2id m = 19456 KiB, t = 2, p = 1, stored as a PHC string; at most one hash at a time.
+- Users: `username` 3–32 of `a-z0-9._-`, unique, permanent, never reused; `role` `admin` only. Passwords 16 code points
+  to 1024 bytes (the UI counts `[...v].length`), argon2id m = 19456 KiB, t = 2, p = 1, 16-byte salt, 32-byte key, stored
+  as a PHC string; at most one hash at a time.
 - Session token: 32 random bytes, base64url unpadded (43 chars), returned only at creation, stored as its SHA-256, 12 h
   fixed lifetime, sent only in the `Commsgun-Session` header, never in a query string or a log.
 - Cookies: `commsgun_session` `HttpOnly; Secure; SameSite=Strict; Path=/`, `Max-Age` from the session's `expires_at`;
   `commsgun_oidc` `HttpOnly; Secure; SameSite=Lax; Path=/auth`, 10 minutes, sealed with a key derived from
   `SESSION_SECRET` alone.
-- Re-auth: `ReauthWindow` 5 min, `ReauthMaxFailures` 5 per session. Identity: `iss` an `https` URL, `sub` 1–255 bytes.
+- Re-auth: `ReauthWindow` 5 min, `ReauthMaxFailures` 5 per session. Identity: `iss` an `https` URL, `sub` 1–255 bytes;
+  account bodies at most `AccountMaxBodyBytes` 4096 (no separate `iss` limit), over it an empty 413.
 - Link (spec 12.5, owner 2026-11-27): every link sends `prompt=login` and `max_age=1`; the callback refuses an ID token
   without `auth_time` or with `auth_time` before the flow's start minus `AUTH_TIME_SKEW_MS` (30 s).
 - SMTP: container port 9203 on `SMTP_ADDR`; STARTTLS, TLS 1.2+; `AUTH PLAIN` only, as an app with `smtp_submission: true`;
-  8 concurrent sessions, 60 s read timeout, 10 messages per connection; `DATA` ≤ `MaxBodyBytes`;
+  8 concurrent sessions, 60 s read timeout, `WriteTimeout` 30 s, 10 messages per connection; `DATA` ≤ `MaxBodyBytes`;
   `send_window_seconds` default and maximum 86400.
 - Limits and durations live only in `api/internal/constants/constants.go` (Rule 2); UI limits in
   `ui/src/lib/server/constants.ts` / `ui/src/lib/constants.ts`; a mirrored limit changes with its twins (CG-02).
@@ -122,8 +124,10 @@ ui/
   src/routes/account/+page.server.ts, +page.svelte (NEW)
   src/routes/logout/+server.ts, +layout.svelte, +page.server.ts, messages/**, probe/+server.ts
   e2e/stub-api.ts                              account routes; session gate
-  e2e/stub-issuer.ts                           NEW stub OIDC issuer (served by Playwright, imported by unit tests)
-  e2e/*.spec.ts, playwright.config.ts          UI-05 rewrite; sso.spec.ts, account.spec.ts (NEW)
+  e2e/stub-issuer.ts                           NEW stub OIDC issuer (HTTPS from a test CA made by openssl at its
+                                                 start; served by Playwright, imported by unit tests)
+  e2e/*.spec.ts, playwright.config.ts          UI-05 rewrite; sso.spec.ts, account.spec.ts (NEW); issuer webServer
+  .gitignore                                   + /e2e/.tls
 scripts/smoke.sh                               API at --memory 96m; healthz waits for the import; CLI disable
 README.md, docs/**                             Task 12
 ```
@@ -184,9 +188,9 @@ Existing `TestSchemaCreationIsAtomic` and `TestOpenPragmas` must pass unchanged.
 **Interfaces:**
 - Produces:
   - constants `Argon2MemoryKiB = 19456`, `Argon2Time = 2`, `Argon2Threads = 1`, `PasswordHashConcurrency = 1`,
-    `PasswordMinChars = 16`, `PasswordMaxBytes = 1024`, `Argon2SaltBytes`, `Argon2KeyBytes` (Q1a).
+    `PasswordMinChars = 16`, `PasswordMaxBytes = 1024`, `Argon2SaltBytes = 16`, `Argon2KeyBytes = 32`.
   - `type Params struct{ MemoryKiB uint32; Time uint32; Threads uint8 }`; `Default() Params` (the constants).
-  - `Valid(pw string) bool` — `PasswordMinChars` characters (Q5) to `PasswordMaxBytes` bytes.
+  - `Valid(pw string) bool` — `PasswordMinChars` code points (`utf8.RuneCountInString`) to `PasswordMaxBytes` bytes.
   - `NewHasher(p Params, concurrency int) *Hasher`; `(*Hasher).Hash(ctx, pw string) (string, error)` →
     `$argon2id$v=19$m=<m>,t=<t>,p=<p>$<salt>$<key>` (unpadded std base64); `(*Hasher).Verify(ctx, pw, phc string)
     (bool, error)` reads the parameters from `phc`; `(*Hasher).VerifyDummy(ctx, pw string) error` verifies against a
@@ -196,11 +200,11 @@ Existing `TestSchemaCreationIsAtomic` and `TestOpenPragmas` must pass unchanged.
 - [ ] **Step 1: Write the failing tests** (tiny `Params` except where named)
 
 ```go
-func TestHashIsPHC(t *testing.T)                 // NewHasher(Default(),1).Hash → prefix "$argon2id$v=19$m=19456,t=2,p=1$"; two hashes of one password differ
+func TestHashIsPHC(t *testing.T)                 // NewHasher(Default(),1).Hash → prefix "$argon2id$v=19$m=19456,t=2,p=1$"; salt decodes to 16 bytes, key to 32; two hashes of one password differ
 func TestVerify(t *testing.T)                    // right → true; wrong, prefix, longer → false
 func TestVerifyReadsParamsFromHash(t *testing.T) // hash made with {64,1,1} verifies under a Hasher built with Default()
 func TestVerifyMalformed(t *testing.T)           // "", "$argon2i$…", bad base64, m=0, missing field → (false, err), no panic
-func TestValid(t *testing.T)                     // 15 chars false; 16 true; 16 multibyte chars true; 1024 bytes true; 1025 false
+func TestValid(t *testing.T)                     // 15 code points false; 16 true; "😀"×15 (60 bytes) false; "😀"×16 true; 1024 bytes true; 1025 false
 func TestOneHashAtATime(t *testing.T)            // slot held by the test: Verify with a ctx cancelled after 50ms returns context.Canceled; after release Hash succeeds
 func TestVerifyDummy(t *testing.T)               // returns nil for any password and waits for the slot like Verify
 ```
@@ -305,8 +309,8 @@ func TestAdminNeverPrintsPassword(t *testing.T)
 **Files:**
 - Create: `api/internal/admin/account.go`, `api/internal/admin/session.go`, `api/internal/admin/decode.go`
 - Modify: `api/internal/admin/handler.go`, `api/internal/admin/probe.go` (use `decode.go`), `api/internal/config/config.go`
-  (`AuthMode`), `api/internal/constants/constants.go` (`AccountMaxBodyBytes`, Q1b), `api/cmd/commsgun-api/main.go`
-  (build the Hasher, pass it)
+  (`AuthMode`), `api/internal/constants/constants.go` (`AccountMaxBodyBytes = ProbeMaxBodyBytes`, 4096),
+  `api/cmd/commsgun-api/main.go` (build the Hasher, pass it)
 - Test: `api/internal/admin/account_test.go`, `api/internal/config/config_test.go`
 
 **Interfaces:**
@@ -321,7 +325,8 @@ func TestAdminNeverPrintsPassword(t *testing.T)
     {"id","username","role"}`; `Session = {"token","expires_at","user"}`; `GET session → {"user","kind","expires_at"}`.
   - `HeaderSession = "Commsgun-Session"`; `(*handler).session(r) (store.Session, [32]byte, bool)` deletes and refuses a
     session whose kind the mode forbids. Order of checks: bearer → session → mode → `session_kind` → body → credentials.
-  - `decodeStrict(r *http.Request, max int64, dst any) (status int, code, field string)` — 413 over `max`, 422
+  - `decodeStrict(r *http.Request, max int64, dst any) (status int, code, field string)` — 413 with an empty body over
+    `max`, 422
     `invalid_json` / `unknown_field` with `field`, as the probe answers today.
   - Existing routes are **not** gated yet (Task 7).
 
@@ -348,7 +353,7 @@ func TestReauth(t *testing.T)             // both+local: 204, reauth_at set; wro
                                           // mode local/oidc → 403 mode; oidc session in both → 403 session_kind
 func TestIdentities(t *testing.T)         // no reauth → 403 reauth_required; at reauth+5m → 204; at reauth+5m+1s → 403 reauth_required;
                                           // pair taken, issuer already linked → 409 already_linked; mode / session_kind refusals; then sessions/oidc → 201
-func TestAccountBodiesStrict(t *testing.T)// malformed → 422 invalid_json; {"username":…,"x":1} → 422 unknown_field "x"; over AccountMaxBodyBytes → 413
+func TestAccountBodiesStrict(t *testing.T)// malformed → 422 invalid_json; {"username":…,"x":1} → 422 unknown_field "x"; 4097 bytes → 413, empty body; 4096 bytes not 413
 func TestAccountMethods(t *testing.T)     // wrong method on each route → 405 with Allow
 func TestAccountLogsCarryNoSecrets(t *testing.T) // no password, token, username, iss or sub in the captured log
 ```
@@ -367,7 +372,7 @@ func TestAccountLogsCarryNoSecrets(t *testing.T) // no password, token, username
 **Files:**
 - Create: `ui/src/lib/server/bootstrap.ts`
 - Modify: `ui/src/hooks.server.ts` (`init`), `ui/src/lib/server/api.ts` (`bootstrapImport`), `ui/src/lib/server/constants.ts`
-  (`IMPORT_RETRY_MS`, Q1d), `ui/e2e/stub-api.ts` (`POST /admin/v1/bootstrap/import`, `GET /__imports`),
+  (`IMPORT_RETRY_MS = 1000`), `ui/e2e/stub-api.ts` (`POST /admin/v1/bootstrap/import`, `GET /__imports`),
   `ui/e2e/healthz.test.ts`, `scripts/smoke.sh`
 - Test: `ui/src/lib/server/bootstrap.test.ts`, `ui/src/lib/server/api.test.ts`
 
@@ -376,9 +381,9 @@ func TestAccountLogsCarryNoSecrets(t *testing.T) // no password, token, username
 - Produces: `createApi(...).bootstrapImport(username: string, password: string): Promise<AccountResult<{ result:
   'imported' | 'skipped' }>>` with `AccountResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string }`
   (`error` is the API's code, or `unavailable` for network/timeout); `importAdmin(api, password: string, sleep?: (ms:
-  number) => Promise<void>): Promise<'imported' | 'skipped'>` — retries every `IMPORT_RETRY_MS` while `unavailable` or
-  `status >= 500`, throws on anything else with a message naming the code, never the password. `init` awaits it when
-  `ADMIN_PASSWORD` is set and logs once `{"level":"warn","msg":"ADMIN_PASSWORD is ignored: users exist"}` on `skipped`.
+  number) => Promise<void>): Promise<'imported' | 'skipped'>` — retries every `IMPORT_RETRY_MS`, with no limit on
+  attempts, while `unavailable` or `status >= 500`, throws on anything else with a message naming the code, never the
+  password. `init` awaits it when `ADMIN_PASSWORD` is set and logs once `{"level":"warn","msg":"ADMIN_PASSWORD is ignored: users exist"}` on `skipped`.
   adapter-node awaits `server.init` before it listens, so `/healthz` is unreachable until the import ends and a throw
   stops the process.
 
@@ -433,7 +438,7 @@ test('the UI imported the admin before /healthz answered');           // GET /__
   - Constants: `SESSION_TOKEN = /^[A-Za-z0-9_-]{43}$/` (twin of `SessionTokenBytes`), `SESSION_HEADER = 'commsgun-session'`;
     removed: `SESSION_TTL_MS`, `SESSION_KEY_LABEL`, and `deriveSessionKey`, `signSession`, `verifySession`,
     `checkPassword` with their tests. `Env` loses `sessionKey`; `adminPassword: string | null` (unset or empty = null;
-    if set, ≥ `MIN_ADMIN_PASSWORD`, Q5).
+    if set, ≥ `MIN_ADMIN_PASSWORD` code points, `[...v].length`).
   - `passwordLimiter` (one `LoginLimiter`) in `limiter.ts`, used by `/login` now and `/account` in Task 9.
   - Stub: `STUB_SESSION_TOKEN = 'fake-session-token-000000000000000000000000'`, `STUB_SESSION_TOKEN_2` (same shape, for
     Task 9), user `{"id":"fake-user-0001","username":"admin","role":"admin"}`; gated stub routes answer 401
@@ -456,7 +461,7 @@ and update the existing admin and `main_test.go` helpers to create a user and a 
 it('sends commsgun-session on every call when created with a token, never in the URL');
 it('maps 401 unauthorized, 401 invalid_credentials, 403 mode, 503 and a network error to distinct AccountResult codes');
 // env.test.ts
-it('accepts an unset or empty ADMIN_PASSWORD as null; rejects 15 characters');
+it('accepts an unset or empty ADMIN_PASSWORD as null; rejects 15 code points and "😀".repeat(15) (30 UTF-16 units); accepts "😀".repeat(16)');
 // e2e/login.spec.ts (rewritten; only login specs drive the form, UI-05)
 // right credentials → cookie value == stub token, HttpOnly, Secure, SameSite=Strict, Path=/, expires within 60s of the stub's expires_at; lands on ?next
 // wrong password → 400 "Incorrect username or password", no cookie
@@ -493,13 +498,14 @@ it('accepts an unset or empty ADMIN_PASSWORD as null; rejects 15 characters');
   `ui/src/env.ts`, `ui/src/lib/server/env.ts`, `ui/src/lib/server/constants.ts`, `ui/src/lib/server/api.ts`
   (`createOidcSession`), `ui/src/hooks.server.ts` (`PUBLIC_PATHS` + `/login/sso`, `/auth/callback`),
   `ui/src/routes/login/+page.server.ts`, `+page.svelte`, `ui/e2e/stub-api.ts` (`POST sessions/oidc`),
-  `ui/playwright.config.ts`
+  `ui/playwright.config.ts`, `ui/.gitignore` (`/e2e/.tls`)
 - Test: `ui/src/lib/server/{env,oidc,oidc-cookie}.test.ts`, `ui/src/lib/login.test.ts`, `ui/e2e/sso.spec.ts`
 
 **Interfaces:**
 - Produces:
   - `Env.oidc: { issuer: string; clientId: string; clientSecret: string; scopes: string } | null` (all three set or all
-    unset; `OIDC_SCOPES` default `openid profile email`; issuer `https:`, Q6); `Env.oidcKey: Buffer` =
+    unset; `OIDC_SCOPES` default `openid profile email`; issuer `https:` only, loopback hosts too, and the RP never sets
+    openid-client's `allowInsecureRequests`); `Env.oidcKey: Buffer` =
     HMAC-SHA256(`SESSION_SECRET`, `OIDC_KEY_LABEL`); `OIDC_AUTO_PROVISION` present (even empty) → throws. `src/env.ts`
     declares it with a schema that keeps `undefined`.
   - Constants `OIDC_COOKIE = 'commsgun_oidc'`, `OIDC_TX_TTL_MS = 600_000`, `OIDC_KEY_LABEL = 'commsgun-oidc-key'`,
@@ -529,15 +535,29 @@ it('accepts an unset or empty ADMIN_PASSWORD as null; rejects 15 characters');
     string): void; down(on: boolean): void }` with RS256 keys from `generateKeyPairSync` (no key fixture), one-time
     codes, PKCE and Basic-auth checks; `auth_time` defaults to the moment the code is issued (`null` omits the claim);
     run as a server on a **different site** from the UI (`localhost:4182` vs `127.0.0.1:4173`) so the callback is a
-    cross-site navigation. Playwright env adds `OIDC_ISSUER`, `OIDC_CLIENT_ID=commsgun`, a `fake-`-prefixed
-    `OIDC_CLIENT_SECRET`.
+    cross-site navigation. Exports `ISSUER_URL = 'https://localhost:4182'` and `ISSUER_CA_FILE` (absolute
+    `ui/e2e/.tls/ca.pem`). Run as `node e2e/stub-issuer.ts`, before listening it makes a fresh test CA and a `localhost`
+    leaf in `e2e/.tls/` with `execFileSync('openssl', …)` (importing the module runs nothing, so unit tests need no
+    openssl): `req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=commsgun-e2e-ca -keyout
+    ca-key.pem -out ca.pem`, then `req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj
+    /CN=localhost -addext subjectAltName=DNS:localhost -addext basicConstraints=critical,CA:FALSE -CA ca.pem -CAkey
+    ca-key.pem -keyout key.pem -out cert.pem` (OpenSSL 3), and serves `node:https` with the leaf; `next`,
+    `setLiveSession` and `down` are `POST /__issuer/{next,live-session,down}` JSON controls. `e2e/` is already in
+    `ui/.dockerignore`, so the keys never enter the image.
+  - `playwright.config.ts`: a `webServer` entry for the issuer **before** the UI's (Playwright starts webServers in
+    order, each awaited, and before any `globalSetup`, so the CA exists when the UI process starts; a `globalSetup`
+    would run too late), with `url: ${ISSUER_URL}/.well-known/openid-configuration` and `ignoreHTTPSErrors: true`.
+    `testEnv` adds `OIDC_ISSUER: ISSUER_URL`, `OIDC_CLIENT_ID=commsgun`, a `fake-`-prefixed `OIDC_CLIENT_SECRET` and
+    `NODE_EXTRA_CA_CERTS: ISSUER_CA_FILE` (Node reads it once at start; the UI's `fetch` trusts the stub only through
+    it). `use.ignoreHTTPSErrors: true` lets the browser open the stub's authorize page; specs send the issuer
+    controls with Playwright's `request` fixture, which honours it.
 
 - [ ] **Step 1: Write the failing unit tests**
 
 ```ts
 // env.test.ts
 it.each(['OIDC_ISSUER', 'OIDC_CLIENT_ID', 'OIDC_CLIENT_SECRET'])('rejects %s alone (all or none)');
-it('rejects a non-https OIDC_ISSUER');                         // loopback exception per Q6
+it.each(['http://issuer.example', 'http://localhost:4182', 'http://127.0.0.1:4182'])('rejects OIDC_ISSUER=%s'); // no loopback exception
 it.each(['false', '', 'true'])('rejects OIDC_AUTO_PROVISION=%s');
 it('defaults OIDC_SCOPES to "openid profile email"');
 // oidc-cookie.test.ts: round trip; one flipped byte → null; at exp → null; other key → null; '', 'x', 10 KB → null
@@ -554,6 +574,7 @@ it('a replayed code fails the second time');
 it('the jwks_uri fetch fails (fetchFn rejects that URL only) → { ok: false }');
 it('deps.jwksCache with uat = now - 301 s and the jwks_uri fetch failing → { ok: false }; uat = now - 10 s → ok'); // conformance: aged key set, refresh failing (Q9)
 it('discovery failure → unavailable, and the next beginAuth fetches discovery again');
+it('an http: issuer passed to beginAuth directly is refused by openid-client'); // allowInsecureRequests is never set
 // login.test.ts: local → password only; oidc+configured → sso only; oidc unconfigured → not_configured; both → both; null → password
 ```
 
@@ -574,7 +595,10 @@ it('discovery failure → unavailable, and the next beginAuth fetches discovery 
 - [ ] **Step 4: Implement.** `/login/sso`: no OIDC → 303 `/login?sso=not_configured`; `beginAuth` fails → log and 303
       `/login?sso=unavailable`; else set `commsgun_oidc` and 303 to the IdP. The callback clears `commsgun_oidc` for
       `login` whatever the outcome, and on any failed check. "SSO is not configured" is logged once per process.
-- [ ] **Step 5: Run** the UI pipeline, then the images + smoke (Task 6 Step 5) → PASS (smoke runs without OIDC: unchanged).
+- [ ] **Step 5: Run** the UI pipeline (the e2e run needs `openssl` 3 on `PATH`; `ubuntu-latest` has it), then the
+      images + smoke (Task 6 Step 5) → PASS (smoke runs without OIDC: unchanged). `sso.spec.ts` passing is the proof
+      that the UI trusted the stub's CA through `NODE_EXTRA_CA_CERTS`; `grep -rn allowInsecureRequests ui/src` prints
+      nothing; `git status --short` shows nothing under `ui/e2e/.tls`.
 - [ ] **Step 6: Commit** — `feat(ui): OIDC login (spec 12.4)`.
 
 ---
@@ -666,7 +690,8 @@ func TestRecipientsFromEnvelopeOnly(t *testing.T)  // To, Cc ignored; Bcc never 
 func TestSubjectRFC2047(t *testing.T)
 func TestReplyFor(t *testing.T)              // queued/duplicate 250 2.0.0; channel_not_allowed, sender_not_allowed 550 5.7.1;
                                              // invalid_subject, body_required, invalid_reply_to, idempotency_conflict 554 5.6.0;
-                                             // rate_limited 451 4.7.1; 503 451 4.3.2; invalid_json, unknown_field, internal 451 4.3.0
+                                             // rate_limited 451 4.7.1; 503 451 4.3.2; invalid_json, unknown_field, internal,
+                                             // too_many_recipients_for_limit (RCPT caps first, Task 11) 451 4.3.0
 func TestSendWindowExpiresBodies(t *testing.T)     // real store: window 3600s, provider paused; at +1h ExpireDue → expired, bodies NULL (anti-goal)
 func TestDuplicateMessageID(t *testing.T)    // Review Focus 5: same message at t and t+10m, Message-ID case/space varied in the header line only → second is 250, one message
 ```
@@ -695,11 +720,13 @@ func TestDuplicateMessageID(t *testing.T)    // Review Focus 5: same message at 
     otherwise; each address parses with `net.SplitHostPort`.
   - `submission.NewServer(cfg *config.Config, st enqueue.Enqueuer, clk clock.Clock, log *slog.Logger, tlsCfg *tls.Config)
     *smtp.Server` — `TLSConfig` (MinVersion TLS 1.2), `MaxMessageBytes = MaxBodyBytes`, `MaxRecipients = MaxRecipients`,
-    `ReadTimeout = SMTPReadTimeout`, `WriteTimeout = WriteTimeout` (Q1e), `ErrorLog` discards library text; the session
-    implements `smtp.AuthSession` (`PLAIN` only), refuses `MAIL` before STARTTLS (530 5.7.0) and before AUTH (Q4),
+    `ReadTimeout = SMTPReadTimeout`, `WriteTimeout = WriteTimeout` (30 s), `ErrorLog` discards library text;
+    `AllowInsecureAuth` stays off, so `AUTH` before STARTTLS gets go-smtp's own `523 5.7.10`; the session implements
+    `smtp.AuthSession` (`PLAIN` only), refuses `MAIL` before STARTTLS and, after it, before AUTH (530 5.7.0, RFC 4954),
     checks `MAIL FROM` against the app's senders, each `RCPT` with `enqueue.ValidRecipient` (553 5.1.3) and against
-    the recipient cap (452 4.5.3; Q4 for `per_minute`/`per_day` below 10), caps sessions
-    at `SMTPMaxSessions` (`NewSession` → 451 4.3.2) and messages per connection (Q4); `Data` calls `BuildRequest` then
+    `min(MaxRecipients, per_minute, per_day)` of the app (452 4.5.3), caps sessions at `SMTPMaxSessions` (`NewSession`
+    → 451 4.3.2) and messages per connection at `SMTPMaxMessagesPerConn` (the 11th message's `MAIL` → 451 4.3.2);
+    `Data` calls `BuildRequest` then
     `SubmitWindowed(…, "smtp", key, …, peer IP, app.SendWindow)` and answers `ReplyFor`. One log line per session:
     outcome, app (after AUTH only), counts, reply codes.
   - `run(ctx context.Context, getenv func(string) string, stdout io.Writer) error` — addresses from config; loads the
@@ -711,12 +738,13 @@ func TestDuplicateMessageID(t *testing.T)    // Review Focus 5: same message at 
 
 ```go
 func TestListenerAddressConfig(t *testing.T) // defaults; SMTP_ADDR without TLS files, TLS files without SMTP_ADDR, "9203" → Load error
-func TestSTARTTLSRequired(t *testing.T)      // EHLO advertises STARTTLS; MAIL before STARTTLS → 530 5.7.0; AUTH before STARTTLS → Q3 code
+func TestSTARTTLSRequired(t *testing.T)      // EHLO advertises STARTTLS, not AUTH; MAIL before STARTTLS → 530 5.7.0; AUTH before STARTTLS → 523 5.7.10
 func TestAuthOneReply(t *testing.T)          // wrong key, unknown app, non-smtp app, mismatched authzid → 535 5.7.8, identical text
-func TestMailBeforeAuth(t *testing.T)        // Q4
-func TestEnvelopeReplies(t *testing.T)       // MAIL FROM not allowed → 550 5.7.1; malformed RCPT → 553 5.1.3; 11th RCPT → 452 4.5.3; DATA over SIZE → 552 5.3.4
+func TestMailBeforeAuth(t *testing.T)        // after STARTTLS, MAIL before AUTH → 530 5.7.0
+func TestEnvelopeReplies(t *testing.T)       // MAIL FROM not allowed → 550 5.7.1; malformed RCPT → 553 5.1.3; 11th RCPT → 452 4.5.3;
+                                             // app per_minute 2: 3rd RCPT → 452 4.5.3; app per_day 1: 2nd RCPT → 452 4.5.3; DATA over SIZE → 552 5.3.4
 func TestSubmitQueues(t *testing.T)          // real store: 250 2.0.0, one message per RCPT, request key "smtp/<hex>", expires_at = now+window
-func TestSessionCaps(t *testing.T)           // 9th concurrent session → 451 4.3.2; message 11 on one connection → Q4
+func TestSessionCaps(t *testing.T)           // 9th concurrent session → 451 4.3.2; MAIL of message 11 on one connection → 451 4.3.2
 func TestTLS11Refused(t *testing.T)
 func TestSMTPLogsCarryNoSecrets(t *testing.T)// no address, subject, Message-ID, key or attempted username
 // main_test.go
@@ -737,7 +765,8 @@ Existing `main_test.go` helpers move from `run(…, enqAddr, admAddr)` to env va
 
 **Files:**
 - Modify: `README.md` (Configuration: K3/U2 vars and `COMMSGUN_CONFIG` keys; a short "Accounts" section with the CLI
-  verbs and the `docker compose run --rm -T commsgun-admin admin <verb>` shape), `docs/context-constitution.md`
+  verbs and the `docker compose run --rm -T commsgun-admin admin <verb>` shape; Tests: the e2e run needs `openssl` for
+  the stub issuer's test CA), `docs/context-constitution.md`
   (CG-01 evidence: account JSON; CG-02 twins: `PasswordMinChars` ↔ `MIN_ADMIN_PASSWORD`, `SessionTokenBytes` ↔
   `SESSION_TOKEN`, `AUTH_TIME_SKEW_MS` ↔ the SSO spec § 3 skew; CG-06: smoke runs the API at `--memory 96m`; CG-08
   evidence: `OIDC_*`, `smtp_submission`, `send_window_seconds`; smoke-strings gotcha), `api/docs/context-constitution.md` (API-02: never edit `schema.sql` or an
@@ -763,12 +792,12 @@ Existing `main_test.go` helpers move from `run(…, enqAddr, admAddr)` to env va
 
 | # | Question | Plan's proposal | Blocks |
 |---|---|---|---|
-| Q1 | Values the spec leaves open: (a) argon2id salt and key length; (b) the account routes' body cap and its refusal (12.7 lists no 413); (c) a maximum `iss` length; (d) the UI's import retry interval; (e) the SMTP write timeout | (a) 16 B salt, 32 B key (RFC 9106); (b) `AccountMaxBodyBytes` 4096 (= `ProbeMaxBodyBytes`), empty 413 like the probe; (c) none beyond (b); (d) `IMPORT_RETRY_MS` 1000, no upper bound ("retry while unreachable"); (e) reuse `WriteTimeout` 30 s | Tasks 2, 5, 6, 11 |
+| Q1 | Values the spec leaves open: (a) argon2id salt and key length; (b) the account routes' body cap and its refusal (12.7 lists no 413); (c) a maximum `iss` length; (d) the UI's import retry interval; (e) the SMTP write timeout | **Resolved (owner, 2026-11-27):** the proposal stands: (a) argon2id 16 B salt, 32 B key (RFC 9106); (b) `AccountMaxBodyBytes` 4096 (= `ProbeMaxBodyBytes`), empty 413 like the probe; (c) no `iss` length limit beyond (b); (d) `IMPORT_RETRY_MS` 1000, no upper bound; (e) the SMTP listener reuses `WriteTimeout` 30 s (spec 12.1, 12.6, 12.7, 12.8; Tasks 2, 5, 6, 11) | — |
 | Q2 | Spec 12.8 says a resent `Message-ID` with the same content is `250` (duplicate), but `SubmitNamespaced` hashes the whole request including `expires_at`, which the SMTP path derives from `now`, so a later resend hashes differently and answers `idempotency_conflict` (554) | **Resolved (owner, 2026-11-27):** the proposal stands: build the request without `expires_at`; `SubmitWindowed` applies `now + send_window` after hashing; HTTP and probe unchanged (spec 12.8) | — |
-| Q3 | Spec 12.8: `AUTH` before STARTTLS → `530 5.7.0`. go-smtp v0.26 answers `523 5.7.10` itself unless `AllowInsecureAuth` is on, which also advertises `AUTH` before TLS (inviting clients to send the key in clear) | Keep `AllowInsecureAuth` off and accept `523 5.7.10` for `AUTH`; amend the spec row. `MAIL` before STARTTLS stays `530 5.7.0` | Task 11 |
-| Q4 | Gaps in the 12.8 reply table: `MAIL` after STARTTLS but before `AUTH`; the 11th message on one connection; more `RCPT`s than the app's `per_minute`/`per_day` (enqueue answers `too_many_recipients_for_limit`, which the table maps to `451 4.3.0` "defect") | `530 5.7.0` (RFC 4954); `451 4.3.2`; refuse at `RCPT` beyond `min(10, per_minute, per_day)` with `452 4.5.3` | Task 10, 11 |
-| Q5 | "16 characters": Go can count code points, but the UI's `loadEnv` counts UTF-16 units (`v.length`); a non-ASCII `ADMIN_PASSWORD` could pass the UI and fail the import | Both count code points (`[...v].length` in the UI) | Task 2, 7 |
-| Q6 | `openid-client` 6 refuses a non-`https` issuer unless `allowInsecureRequests` is set; the e2e stub issuer is plain HTTP | `loadEnv` accepts `http:` only for host `localhost`/`127.0.0.1`, and only then the RP sets `allowInsecureRequests`. Alternative: an HTTPS stub with a CA made by `openssl` at test start and `NODE_EXTRA_CA_CERTS` | Task 8 |
+| Q3 | Spec 12.8: `AUTH` before STARTTLS → `530 5.7.0`. go-smtp v0.26 answers `523 5.7.10` itself unless `AllowInsecureAuth` is on, which also advertises `AUTH` before TLS (inviting clients to send the key in clear) | **Resolved (owner, 2026-11-27):** keep `AllowInsecureAuth` off; `AUTH` before STARTTLS answers `523 5.7.10` (spec 12.8 row amended); `MAIL` before STARTTLS stays `530 5.7.0` (Task 11) | — |
+| Q4 | Gaps in the 12.8 reply table: `MAIL` after STARTTLS but before `AUTH`; the 11th message on one connection; more `RCPT`s than the app's `per_minute`/`per_day` (enqueue answers `too_many_recipients_for_limit`, which the table maps to `451 4.3.0` "defect") | **Resolved (owner, 2026-11-27):** `MAIL` after STARTTLS but before `AUTH` → `530 5.7.0` (RFC 4954); the 11th message on one connection → `451 4.3.2`; an `RCPT` beyond `min(10, per_minute, per_day)` of the app → `452 4.5.3` at `RCPT` (spec 12.8 table; Tasks 10, 11) | — |
+| Q5 | "16 characters": Go can count code points, but the UI's `loadEnv` counts UTF-16 units (`v.length`); a non-ASCII `ADMIN_PASSWORD` could pass the UI and fail the import | **Resolved (owner, 2026-11-27):** both count code points (`utf8.RuneCountInString` in Go, `[...v].length` in the UI); the spec says code points (12.1, 12.6, 12.9; Tasks 2, 7) | — |
+| Q6 | `openid-client` 6 refuses a non-`https` issuer unless `allowInsecureRequests` is set; the e2e stub issuer is plain HTTP | **Resolved (owner, 2026-11-27; not the proposal):** the e2e stub issuer serves HTTPS from a CA made by `openssl` when the stub starts, trusted by the UI process through `NODE_EXTRA_CA_CERTS`; production `loadEnv` refuses every non-`https:` issuer and the RP never sets `allowInsecureRequests` (Task 8) | — |
 | Q7 | Link re-auth: spec 12.5 sends `prompt=login`; SSO spec S17 pairs it with `max_age=1` and a fresh `auth_time` | **Resolved (owner, 2026-11-27; SSO spec § 3 "Linking"):** every link sends `prompt=login` and `max_age=1`; the callback refuses a missing `auth_time` or one before the flow's start minus `AUTH_TIME_SKEW_MS` (30 s), as a failed ID-token check (spec 12.5; Tasks 8, 9) | — |
 | Q8 | § 13 is a draft pending owner review before P5; this plan builds what it states | Review § 13 (and its residuals 1–7) before P5 | P5, not a task |
 | Q9 | Resolved (2026-11-27, cross-repo check): openid-client 6 exports `setJwksCache`/`getJwksCache`, so the shared conformance case "an ID token on a key set older than 3600 s with the refresh failing" is tested as happybabytracker's plan does: a `deps.jwksCache` seam seeds a cache with a real `uat` of now − 301 s (past the library's 300 s refetch age) and the `jwks_uri` fetch fails → refused; now − 10 s passes. No fake clock | — | Task 8 |
