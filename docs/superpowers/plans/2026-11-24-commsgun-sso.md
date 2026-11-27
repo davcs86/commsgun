@@ -10,7 +10,7 @@ sets the new variables.
 forward-only migration runner), hashes passwords with argon2id one at a time, enforces `AUTH_MODE`, and requires a
 `Commsgun-Session` header on every admin route but four. The UI is the OIDC relying party (`openid-client`), keeps only an
 opaque session token in `commsgun_session`, and imports today's `ADMIN_PASSWORD` once at start. A third listener (go-smtp,
-STARTTLS, `AUTH PLAIN`) turns each `DATA` into one enqueue request through `SubmitNamespaced`.
+STARTTLS, `AUTH PLAIN`) turns each `DATA` into one enqueue request through `SubmitWindowed`.
 
 **Tech Stack:** Go 1.27 (`net/http`, `log/slog`, `modernc.org/sqlite`), new direct deps `golang.org/x/crypto/argon2`,
 `github.com/emersion/go-smtp`, `github.com/emersion/go-sasl`; SvelteKit 3.1.1 / adapter-node 6.0.1 (both exact, CG-04),
@@ -516,7 +516,10 @@ it('accepts an unset or empty ADMIN_PASSWORD as null; rejects 15 characters');
     `purpose === 'link'`.
     `completeAuth(oidc, tx, callbackUrl: URL, fetchFn?): Promise<{ ok: true; iss: string; sub: string;
     preferredUsername: string | null } | { ok: false; reason: 'state' | 'token' | 'unavailable' }>` — discovery on
-    every call too, so each callback verifies on a key set fetched within it (Q9); for `link`, a missing `auth_time` or
+    every call too, with `enableNonRepudiationChecks` (ID-token signatures verified against the issuer's JWKS), so each
+    callback verifies on a key set fetched within it; an optional `deps.jwksCache` is passed to openid-client's exported
+    `setJwksCache` (test seam only, Q9). openid-client's `checks.maxAge` is never passed: it compares `auth_time` with the
+    callback's clock, not the flow's start. For `link`, a missing `auth_time` or
     `auth_time * 1000 < tx.started - AUTH_TIME_SKEW_MS` → reason `token`, the same path as a wrong `nonce`.
     `fetchFn` is passed as openid-client's `customFetch`.
   - `loginOptions(mode: AuthMode | null, ssoConfigured: boolean): { password: boolean; sso: 'button' | 'not_configured'
@@ -548,7 +551,8 @@ it('success returns iss, sub and preferred_username; the token request used HTTP
 it.each(['bad state', 'wrong iss', 'wrong aud', 'expired', 'wrong nonce', 'HS256', 'none', 'signed by another key'])
   ('%s → { ok: false }');                                     // state → reason 'state', the rest 'token'
 it('a replayed code fails the second time');
-it('the jwks_uri fetch fails (fetchFn rejects that URL only) → { ok: false }'); // conformance: key set older than 3600 s with the refresh failing (Q9)
+it('the jwks_uri fetch fails (fetchFn rejects that URL only) → { ok: false }');
+it('deps.jwksCache with uat = now - 301 s and the jwks_uri fetch failing → { ok: false }; uat = now - 10 s → ok'); // conformance: aged key set, refresh failing (Q9)
 it('discovery failure → unavailable, and the next beginAuth fetches discovery again');
 // login.test.ts: local → password only; oidc+configured → sso only; oidc unconfigured → not_configured; both → both; null → password
 ```
@@ -767,7 +771,7 @@ Existing `main_test.go` helpers move from `run(…, enqAddr, admAddr)` to env va
 | Q6 | `openid-client` 6 refuses a non-`https` issuer unless `allowInsecureRequests` is set; the e2e stub issuer is plain HTTP | `loadEnv` accepts `http:` only for host `localhost`/`127.0.0.1`, and only then the RP sets `allowInsecureRequests`. Alternative: an HTTPS stub with a CA made by `openssl` at test start and `NODE_EXTRA_CA_CERTS` | Task 8 |
 | Q7 | Link re-auth: spec 12.5 sends `prompt=login`; SSO spec S17 pairs it with `max_age=0` and a fresh `auth_time` | **Resolved (owner, 2026-11-27; SSO spec § 3 "Linking"):** every link sends `prompt=login` and `max_age=0`; the callback refuses a missing `auth_time` or one before the flow's start minus `AUTH_TIME_SKEW_MS` (30 s), as a failed ID-token check (spec 12.5; Tasks 8, 9) | — |
 | Q8 | § 13 is a draft pending owner review before P5; this plan builds what it states | Review § 13 (and its residuals 1–7) before P5 | P5, not a task |
-| Q9 | SSO spec § 3 conformance: "an ID token on a key set older than 3600 s with the refresh failing". openid-client keeps its key-set cache per `Configuration` and ages it by its own clock; the stub issuer has no clock control, the plan finds no public control of that cache's age in openid-client 6, and `completeAuth` discovers on every call, so no cached set outlives one callback and the 300 s refetch cannot be driven in a test | Test it as a `jwks_uri` fetch that fails during `completeAuth` (Task 8) and rely on the per-call discovery for the age; no clock mechanism is added | Task 8 |
+| Q9 | Resolved (2026-11-27, cross-repo check): openid-client 6 exports `setJwksCache`/`getJwksCache`, so the shared conformance case "an ID token on a key set older than 3600 s with the refresh failing" is tested as happybabytracker's plan does: a `deps.jwksCache` seam seeds a cache with a real `uat` of now − 301 s (past the library's 300 s refetch age) and the `jwks_uri` fetch fails → refused; now − 10 s passes. No fake clock | — | Task 8 |
 
 **Readings the plan takes (correct any):** `ReauthMaxFailures` counts every failure on a session and a success does not
 reset it; `OIDC_AUTO_PROVISION` counts as set when present, even empty, and an empty `ADMIN_PASSWORD` counts as unset;
