@@ -335,7 +335,7 @@ func TestSessionsOIDC(t *testing.T) {
 	expect(t, "sub 255 bytes", e.call(http.MethodPost, pathOIDC, "", identity(t, acctIss, strings.Repeat("s", 255))), 403, `{"error":"not_linked"}`)
 
 	for _, c := range []struct{ iss, sub, field string }{
-		{"http://x", acctSub, "iss"}, {"", acctSub, "iss"}, {"not a url", acctSub, "iss"}, {"https://", acctSub, "iss"},
+		{"http://x", acctSub, "iss"}, {"", acctSub, "iss"}, {"not a url", acctSub, "iss"}, {"https://", acctSub, "iss"}, {"https://:443", acctSub, "iss"},
 		{acctIss, "", "sub"}, {acctIss, strings.Repeat("s", 256), "sub"},
 	} {
 		expect(t, c.iss+"/"+c.sub, e.call(http.MethodPost, pathOIDC, "", identity(t, c.iss, c.sub)),
@@ -619,5 +619,26 @@ func TestAccountLogsCarryNoSecrets(t *testing.T) {
 		if strings.Contains(logged, s) {
 			t.Errorf("log contains the %s: %s", name, logged)
 		}
+	}
+}
+
+// a store fault on session lookup → 500 via fail, never 401 session; mode-refused still 401 and deleted
+func TestSessionStoreFault(t *testing.T) {
+	e := accountSetup(t, config.AuthBoth)
+	addUser(t, e, acctUser)
+	tok := login(t, e, acctUser)
+	e.cfg.AuthMode = config.AuthOIDC
+	expect(t, "mode-refused", e.call(http.MethodGet, pathSession, tok, ""), 401, wantSession)
+	if _, err := e.st.SessionByHash(context.Background(), now, sha256.Sum256([]byte(tok))); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("mode-refused row: %v, want deleted", err)
+	}
+	e.cfg.AuthMode = config.AuthBoth
+	tok = login(t, e, acctUser)
+	e.st.Close()
+	for _, c := range []struct{ method, path, body string }{
+		{http.MethodGet, pathSession, ""}, {http.MethodPost, pathReauth, reauthBody(t, acctPass)},
+		{http.MethodPost, pathIdentity, identity(t, acctIss, acctSub)},
+	} {
+		expect(t, c.method+" "+c.path+" on a closed store", e.call(c.method, c.path, tok, c.body), 500, `{"error":"internal"}`)
 	}
 }

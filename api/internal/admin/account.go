@@ -131,7 +131,7 @@ func toUserJSON(u store.User) userJSON { return userJSON{ID: u.ID, Username: u.U
 // identityField names the invalid field of an identity, or is empty.
 func identityField(iss, sub string) string {
 	u, err := url.Parse(iss)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		return "iss"
 	}
 	if len(sub) == 0 || len(sub) > constants.IdentitySubjectMaxBytes {
@@ -264,9 +264,9 @@ func (h *handler) currentSession(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	ses, _, ok := h.session(r)
-	if !ok {
-		refuse(w, http.StatusUnauthorized, errSession)
+	ses, _, err := h.session(r)
+	if err != nil {
+		h.sessionFail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, sessionInfoJSON{User: toUserJSON(ses.User), Kind: ses.Kind, ExpiresAt: ses.ExpiresAt})
@@ -274,10 +274,10 @@ func (h *handler) currentSession(w http.ResponseWriter, r *http.Request) {
 
 // linkable applies the session, mode and session_kind checks of re-auth and link, in that order.
 func (h *handler) linkable(w http.ResponseWriter, r *http.Request) (store.Session, [32]byte, bool) {
-	ses, sum, ok := h.session(r)
+	ses, sum, err := h.session(r)
 	switch {
-	case !ok:
-		refuse(w, http.StatusUnauthorized, errSession)
+	case err != nil:
+		h.sessionFail(w, r, err)
 	case h.cfg.AuthMode != config.AuthBoth:
 		refuse(w, http.StatusForbidden, errMode)
 	case ses.Kind != model.KindLocal:
