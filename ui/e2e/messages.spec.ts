@@ -1,7 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { SESSION_COOKIE } from '../src/lib/server/constants.js';
-import { deriveSessionKey, signSession } from '../src/lib/server/session.js';
 import {
 	HELD_EMAIL_INDEX,
 	HOSTILE_ERROR,
@@ -10,11 +9,9 @@ import {
 	receivedRequests,
 	resetRequests,
 	setScenario,
-	TEST_ADMIN_PASSWORD,
-	TEST_SESSION_SECRET
+	STUB_SESSION_TOKEN
 } from './stub-api.js';
 
-const SESSION_KEY = deriveSessionKey(TEST_SESSION_SECRET, TEST_ADMIN_PASSWORD);
 const PAGE_SIZE = 50;
 const FAILED_ID = 'msg-0006';
 const HELD_ID = 'msg-0035';
@@ -23,9 +20,7 @@ const HOSTILE_ID = 'msg-0005';
 
 test.beforeEach(async ({ context, baseURL }) => {
 	await setScenario('normal');
-	await context.addCookies([
-		{ name: SESSION_COOKIE, value: signSession(SESSION_KEY, Date.now()), url: baseURL }
-	]);
+	await context.addCookies([{ name: SESSION_COOKIE, value: STUB_SESSION_TOKEN, url: baseURL }]);
 });
 
 const cards = (page: Page) => page.getByTestId('message-card');
@@ -150,8 +145,9 @@ test('empty scenario shows an empty state', async ({ page }) => {
 	await expect(page.getByRole('link', { name: 'Older' })).toHaveCount(0);
 });
 
-test('down scenario shows the unavailable message with a retry link', async ({ page }) => {
-	await setScenario('down');
+// The whole API down is a 503 from the hook (login.spec.ts); here every data endpoint is down.
+test('data endpoints down: the unavailable message with a retry link', async ({ page }) => {
+	await setScenario('normal', ['messages', 'facets']);
 	const response = await page.goto('/messages');
 	expect(response?.status()).toBe(200);
 	await expect(page.getByText('The delivery API is not responding')).toBeVisible();
@@ -247,8 +243,8 @@ for (const id of ['does-not-exist', 'bad%20id']) {
 	});
 }
 
-test('detail with the API down is a 200 with a retry link', async ({ page }) => {
-	await setScenario('down');
+test('detail with its endpoint down is a 200 with a retry link', async ({ page }) => {
+	await setScenario('normal', ['message']);
 	const response = await page.goto(`/messages/${FAILED_ID}`);
 	expect(response?.status()).toBe(200);
 	await expect(page.getByText('The delivery API is not responding')).toBeVisible();

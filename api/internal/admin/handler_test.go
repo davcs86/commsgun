@@ -31,10 +31,43 @@ func setup(t *testing.T) (http.Handler, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	cfg := &config.Config{AdminAPIToken: token, Providers: map[model.Channel]*config.ProviderCfg{
+	cfg := &config.Config{AdminAPIToken: token, AuthMode: config.AuthLocal, Providers: map[model.Channel]*config.ProviderCfg{
 		model.ChannelEmail: {Name: "resend", PerMinute: 60, PerDay: 100},
 	}}
-	return NewHandler(st, cfg, clock.NewFake(now), slog.New(slog.NewJSONHandler(io.Discard, nil))), st
+	return withSession(t, NewHandler(st, cfg, clock.NewFake(now), slog.New(slog.NewJSONHandler(io.Discard, nil)), &fakeHasher{})), st
+}
+
+// sessionHandler sends its session on every request that carries none.
+type sessionHandler struct {
+	h     http.Handler
+	token string
+}
+
+func (s sessionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get(HeaderSession) == "" {
+		r.Header.Set(HeaderSession, s.token)
+	}
+	s.h.ServeHTTP(w, r)
+}
+
+// withSession creates a user and a session through the API (import, then sessions/local) and wraps h with it.
+func withSession(t *testing.T, h http.Handler) http.Handler {
+	t.Helper()
+	post := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"username":"admin","password":"`+acctPass+`"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := post("/admin/v1/bootstrap/import"); rec.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", rec.Code, rec.Body)
+	}
+	rec := post("/admin/v1/sessions/local")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("sessions/local: %d %s", rec.Code, rec.Body)
+	}
+	return sessionHandler{h, sessionToken(t, rec)}
 }
 
 func do(h http.Handler, method, path, auth string) *httptest.ResponseRecorder {

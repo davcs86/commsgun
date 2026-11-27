@@ -4,13 +4,16 @@ import { createApi } from './api.js';
 import { parseFilters } from '../filters.js';
 
 const TOKEN = 'tok-' + 'x'.repeat(40);
+const PASSWORD = 'p'.repeat(16);
+const SESSION = 'fake-session-token-000000000000000000000000';
 const env: Env = {
-	adminPassword: 'p'.repeat(16),
+	adminPassword: PASSWORD,
 	sessionSecret: 's'.repeat(32),
 	adminApiToken: TOKEN,
 	apiBaseUrl: 'http://api:9201',
 	origin: 'https://x.test',
-	sessionKey: Buffer.alloc(32)
+	oidc: null,
+	oidcKey: Buffer.alloc(32)
 };
 const filters = parseFilters(
 	new URLSearchParams('range=1h&channel=email'),
@@ -329,5 +332,119 @@ describe('createApi', () => {
 		expect(r).toEqual({ ok: true, data: options });
 		expect(String(fetchFn.mock.calls[0][0])).toBe('http://api:9201/admin/v1/probes');
 		expect(fetchFn.mock.calls[0][1]?.method).toBeUndefined();
+	});
+	it('bootstrapImport posts {"username":"admin","password"} with the bearer token and no session header', async () => {
+		const fetchFn = vi.fn<(u: string, i?: RequestInit) => Promise<Response>>(async () =>
+			json({ result: 'imported' })
+		);
+		const api = createApi(env, fetchFn as unknown as typeof fetch);
+		const r = await api.bootstrapImport('admin', PASSWORD);
+		expect(r).toEqual({ ok: true, data: { result: 'imported' } });
+		const [url, init] = fetchFn.mock.calls[0];
+		expect(String(url)).toBe('http://api:9201/admin/v1/bootstrap/import');
+		expect(init?.method).toBe('POST');
+		expect(JSON.parse(String(init?.body))).toEqual({
+			username: 'admin',
+			password: PASSWORD
+		});
+		const headers = new Headers(init?.headers);
+		expect(headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+		expect(headers.get('commsgun-session')).toBeNull();
+		expect(init?.signal).toBeInstanceOf(AbortSignal);
+	});
+
+	it('sends commsgun-session on every call when created with a token, never in the URL', async () => {
+		const fetchFn = vi.fn<(u: string, i?: RequestInit) => Promise<Response>>(async () => json({}));
+		const api = createApi(env, fetchFn as unknown as typeof fetch, SESSION);
+		await api.stats(filters);
+		await api.messages(filters, 'cur1');
+		await api.message('m1');
+		await api.facets();
+		await api.overview();
+		await api.probeOptions();
+		await api.sendProbe(
+			{ channel: 'email', to: 'me@example.com', provider: null, key: 'k' },
+			'::1'
+		);
+		await api.bootstrapImport('admin', PASSWORD);
+		await api.authMode();
+		await api.createLocalSession('admin', PASSWORD);
+		await api.session();
+		await api.deleteSession();
+		expect(fetchFn).toHaveBeenCalledTimes(12);
+		for (const [url, init] of fetchFn.mock.calls) {
+			expect(new Headers(init?.headers).get('commsgun-session')).toBe(SESSION);
+			expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
+			expect(String(url)).not.toContain(SESSION);
+		}
+		const paths = fetchFn.mock.calls.slice(8).map(([u, i]) => [i?.method ?? 'GET', String(u)]);
+		expect(paths).toEqual([
+			['GET', 'http://api:9201/admin/v1/auth'],
+			['POST', 'http://api:9201/admin/v1/sessions/local'],
+			['GET', 'http://api:9201/admin/v1/session'],
+			['DELETE', 'http://api:9201/admin/v1/session']
+		]);
+		expect(JSON.parse(String(fetchFn.mock.calls[9][1]?.body))).toEqual({
+			username: 'admin',
+			password: PASSWORD
+		});
+		const without = vi.fn<(u: string, i?: RequestInit) => Promise<Response>>(async () => json({}));
+		await createApi(env, without as unknown as typeof fetch).overview();
+		expect(new Headers(without.mock.calls[0][1]?.headers).get('commsgun-session')).toBeNull();
+	});
+
+	it('maps 401 unauthorized, 401 invalid_credentials, 403 mode, 503 and a network error to distinct AccountResult codes', async () => {
+		const login = (res: () => Response) =>
+			createApi(env, (async () => res()) as unknown as typeof fetch).createLocalSession(
+				'user-unique-4471',
+				PASSWORD
+			);
+		const results = [
+			await login(() => json({ error: 'unauthorized' }, 401)),
+			await login(() => json({ error: 'invalid_credentials' }, 401)),
+			await login(() => json({ error: 'mode' }, 403)),
+			await login(() => new Response('<html>busy</html>', { status: 503 })),
+			await login(() => {
+				throw new TypeError('fetch failed');
+			})
+		];
+		expect(results).toEqual([
+			{ ok: false, status: 401, error: 'unauthorized' },
+			{ ok: false, status: 401, error: 'invalid_credentials' },
+			{ ok: false, status: 403, error: 'mode' },
+			{ ok: false, status: 503, error: 'unavailable' },
+			{ ok: false, status: 0, error: 'unavailable' }
+		]);
+		expect(new Set(results.map((r) => JSON.stringify(r))).size).toBe(5);
+		const session = {
+			token: SESSION,
+			expires_at: '2026-11-13T12:00:00Z',
+			user: { id: 'u1', username: 'admin', role: 'admin' }
+		};
+		expect(await login(() => json(session, 201))).toEqual({ ok: true, data: session });
+		const api = (res: () => Response) =>
+			createApi(env, (async () => res()) as unknown as typeof fetch, SESSION);
+		expect(await api(() => json({ error: 'session' }, 401)).session()).toEqual({
+			ok: false,
+			status: 401,
+			error: 'session'
+		});
+		expect(await api(() => new Response('<html>', { status: 500 })).session()).toEqual({
+			ok: false,
+			status: 500,
+			error: 'error'
+		});
+		expect(await api(() => new Response(null, { status: 204 })).deleteSession()).toEqual({
+			ok: true,
+			data: null
+		});
+		expect(await api(() => json({ mode: 'both' })).authMode()).toEqual({
+			ok: true,
+			data: { mode: 'both' }
+		});
+		for (const line of vi.mocked(console.error).mock.calls.map((c) => String(c[0]))) {
+			for (const banned of [PASSWORD, SESSION, TOKEN, 'user-unique-4471'])
+				expect(line).not.toContain(banned);
+		}
 	});
 });

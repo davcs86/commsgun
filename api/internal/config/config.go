@@ -6,18 +6,22 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/mail"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/davcs86/commsgun/api/internal/constants"
 	"github.com/davcs86/commsgun/api/internal/model"
 )
 
 const (
-	defaultDataDir = "/data"
-	providerResend = "resend"
-	providerFake   = "fake"
+	defaultDataDir     = "/data"
+	defaultEnqueueAddr = ":9200"
+	defaultAdminAddr   = ":9201"
+	providerResend     = "resend"
+	providerFake       = "fake"
 )
 
 var appIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
@@ -37,8 +41,10 @@ type ChannelCfg struct {
 }
 
 type App struct {
-	ID, Key  string
-	Channels map[model.Channel]ChannelCfg
+	ID, Key        string
+	Channels       map[model.Channel]ChannelCfg
+	SMTPSubmission bool
+	SendWindow     time.Duration
 }
 
 type ProviderCfg struct {
@@ -46,11 +52,35 @@ type ProviderCfg struct {
 	PerMinute, PerDay int
 }
 
+// AuthMode is AUTH_MODE: which session kinds the API creates and accepts.
+type AuthMode string
+
+const (
+	AuthLocal AuthMode = "local"
+	AuthOIDC  AuthMode = "oidc"
+	AuthBoth  AuthMode = "both"
+)
+
+func (m AuthMode) Allows(kind model.SessionKind) bool {
+	switch m {
+	case AuthLocal:
+		return kind == model.KindLocal
+	case AuthOIDC:
+		return kind == model.KindOIDC
+	case AuthBoth:
+		return kind == model.KindLocal || kind == model.KindOIDC
+	}
+	return false
+}
+
 type Config struct {
 	Apps                                 map[string]App
 	Providers                            map[model.Channel]*ProviderCfg
 	ResendAPIKey, AdminAPIToken, DataDir string
 	AllowFake                            bool
+	AuthMode                             AuthMode
+	EnqueueAddr, AdminAddr, SMTPAddr     string
+	SMTPTLSCertFile, SMTPTLSKeyFile      string
 }
 
 type rawConfig struct {
@@ -59,9 +89,11 @@ type rawConfig struct {
 }
 
 type rawApp struct {
-	ID       string                `json:"id"`
-	Key      string                `json:"key"`
-	Channels map[string]rawChannel `json:"channels"`
+	ID                string                `json:"id"`
+	Key               string                `json:"key"`
+	Channels          map[string]rawChannel `json:"channels"`
+	SMTPSubmission    bool                  `json:"smtp_submission"`
+	SendWindowSeconds *int                  `json:"send_window_seconds"`
 }
 
 type rawChannel struct {
@@ -75,6 +107,14 @@ type rawProvider struct {
 	Name      string `json:"name"`
 	PerMinute int    `json:"per_minute"`
 	PerDay    int    `json:"per_day"`
+}
+
+// DataDir is DATA_DIR, or /data when unset.
+func DataDir(getenv func(string) string) string {
+	if d := getenv("DATA_DIR"); d != "" {
+		return d
+	}
+	return defaultDataDir
 }
 
 // Load validates everything and never puts a key or token value in an error.
@@ -94,14 +134,22 @@ func Load(getenv func(string) string) (*Config, error) {
 		Providers:     map[model.Channel]*ProviderCfg{},
 		ResendAPIKey:  getenv("RESEND_API_KEY"),
 		AdminAPIToken: getenv("ADMIN_API_TOKEN"),
-		DataDir:       getenv("DATA_DIR"),
+		DataDir:       DataDir(getenv),
 		AllowFake:     getenv("COMMSGUN_ALLOW_FAKE") == "1",
-	}
-	if c.DataDir == "" {
-		c.DataDir = defaultDataDir
 	}
 	if len(c.AdminAPIToken) < constants.MinSecretLen {
 		return nil, fmt.Errorf("ADMIN_API_TOKEN: must be at least %d characters", constants.MinSecretLen)
+	}
+	switch m := AuthMode(getenv("AUTH_MODE")); m {
+	case "":
+		c.AuthMode = AuthLocal
+	case AuthLocal, AuthOIDC, AuthBoth:
+		c.AuthMode = m
+	default:
+		return nil, fmt.Errorf("AUTH_MODE: must be %s, %s or %s", AuthLocal, AuthOIDC, AuthBoth)
+	}
+	if err := c.loadListeners(getenv); err != nil {
+		return nil, err
 	}
 	if len(raw.Apps) == 0 {
 		return nil, fmt.Errorf("COMMSGUN_CONFIG apps: at least one app is required")
@@ -122,6 +170,35 @@ func Load(getenv func(string) string) (*Config, error) {
 	return c, nil
 }
 
+// loadListeners reads the bind addresses; SMTP is off unless SMTP_ADDR is set, and then needs both TLS files.
+func (c *Config) loadListeners(getenv func(string) string) error {
+	c.EnqueueAddr, c.AdminAddr = defaultEnqueueAddr, defaultAdminAddr
+	if v := getenv("ENQUEUE_ADDR"); v != "" {
+		c.EnqueueAddr = v
+	}
+	if v := getenv("ADMIN_ADDR"); v != "" {
+		c.AdminAddr = v
+	}
+	c.SMTPAddr, c.SMTPTLSCertFile, c.SMTPTLSKeyFile = getenv("SMTP_ADDR"), getenv("SMTP_TLS_CERT_FILE"), getenv("SMTP_TLS_KEY_FILE")
+	for _, a := range [][2]string{{"ENQUEUE_ADDR", c.EnqueueAddr}, {"ADMIN_ADDR", c.AdminAddr}, {"SMTP_ADDR", c.SMTPAddr}} {
+		if a[1] == "" {
+			continue
+		}
+		if _, _, err := net.SplitHostPort(a[1]); err != nil {
+			return fmt.Errorf("%s: must be host:port", a[0])
+		}
+	}
+	for _, f := range [][2]string{{"SMTP_TLS_CERT_FILE", c.SMTPTLSCertFile}, {"SMTP_TLS_KEY_FILE", c.SMTPTLSKeyFile}} {
+		switch {
+		case c.SMTPAddr != "" && f[1] == "":
+			return fmt.Errorf("%s: required when SMTP_ADDR is set", f[0])
+		case c.SMTPAddr == "" && f[1] != "":
+			return fmt.Errorf("%s: refused when SMTP_ADDR is unset", f[0])
+		}
+	}
+	return nil
+}
+
 func buildApp(i int, ra rawApp) (App, error) {
 	p := fmt.Sprintf("COMMSGUN_CONFIG apps[%d]", i)
 	if !appIDPattern.MatchString(ra.ID) {
@@ -130,7 +207,15 @@ func buildApp(i int, ra rawApp) (App, error) {
 	if len(ra.Key) < constants.MinSecretLen {
 		return App{}, fmt.Errorf("%s.key: must be at least %d characters", p, constants.MinSecretLen)
 	}
-	app := App{ID: ra.ID, Key: ra.Key, Channels: map[model.Channel]ChannelCfg{}}
+	app := App{ID: ra.ID, Key: ra.Key, Channels: map[model.Channel]ChannelCfg{},
+		SMTPSubmission: ra.SMTPSubmission, SendWindow: constants.MaxSendWindow}
+	if ra.SendWindowSeconds != nil {
+		maxSec := int(constants.MaxSendWindow / time.Second)
+		if sec := *ra.SendWindowSeconds; sec <= 0 || sec > maxSec {
+			return App{}, fmt.Errorf("%s.send_window_seconds: must be 1 to %d", p, maxSec)
+		}
+		app.SendWindow = time.Duration(*ra.SendWindowSeconds) * time.Second
+	}
 	for name, rc := range ra.Channels {
 		ch := model.Channel(name)
 		cp := fmt.Sprintf("%s.channels.%s", p, name)
@@ -245,4 +330,13 @@ func (c *Config) Authenticate(appID, bearer string) (*App, bool) {
 		return nil, false
 	}
 	return &app, true
+}
+
+// AuthenticateSMTP is Authenticate, then accepts only an app with smtp_submission; it costs the same.
+func (c *Config) AuthenticateSMTP(appID, key string) (*App, bool) {
+	app, ok := c.Authenticate(appID, key)
+	if !ok || !app.SMTPSubmission {
+		return nil, false
+	}
+	return app, true
 }

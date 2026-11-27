@@ -108,12 +108,6 @@ done
 docker network create "$NETWORK" >/dev/null
 docker volume create "$VOLUME" >/dev/null
 
-docker run -d --name "$API" --network "$NETWORK" \
-  --read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m \
-  -v "$VOLUME":/data -p "127.0.0.1:${ENQUEUE_PORT}:9200" \
-  -e COMMSGUN_CONFIG="$CONFIG" -e COMMSGUN_ALLOW_FAKE=1 \
-  -e ADMIN_API_TOKEN="$ADMIN_API_TOKEN" \
-  "$API_IMAGE" >/dev/null
 docker run -d --name "$UI" --network "$NETWORK" \
   --read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m \
   -p "127.0.0.1:${UI_PORT}:9202" \
@@ -121,6 +115,22 @@ docker run -d --name "$UI" --network "$NETWORK" \
   -e ADMIN_API_TOKEN="$ADMIN_API_TOKEN" -e SESSION_SECRET="$SESSION_SECRET" \
   -e ADMIN_PASSWORD="$ADMIN_PASSWORD" \
   "$UI_IMAGE" >/dev/null
+
+# The UI starts first: its healthz must not answer 200 until the API has taken the import.
+healthz_start=$SECONDS
+while [ $((SECONDS - healthz_start)) -le 3 ]; do
+  code="$(ui_curl -o /dev/null -w '%{http_code}' --max-time 1 "$UI_URL/healthz" 2>/dev/null || true)"
+  [ "$code" != 200 ] || fail "ui healthz waits for the import" "healthz answered 200 before the api ran"
+  sleep 0.5
+done
+pass "ui healthz waits for the import"
+
+docker run -d --name "$API" --network "$NETWORK" \
+  --read-only --cap-drop ALL --security-opt no-new-privileges --memory 96m \
+  -v "$VOLUME":/data -p "127.0.0.1:${ENQUEUE_PORT}:9200" \
+  -e COMMSGUN_CONFIG="$CONFIG" -e COMMSGUN_ALLOW_FAKE=1 \
+  -e ADMIN_API_TOKEN="$ADMIN_API_TOKEN" \
+  "$API_IMAGE" >/dev/null
 
 wait_ok "api healthz" "$ENQUEUE/healthz"
 wait_ok "ui healthz" "$UI_URL/healthz"
@@ -240,5 +250,17 @@ echo "memory api: before restart ${api_mem_before} MiB, after ${api_mem_after} M
 echo "memory ui:  before api restart ${ui_mem_before} MiB, after ${ui_mem_after} MiB (limit ${UI_MEM_LIMIT_MIB})"
 if [ "$api_mem" -le "$API_MEM_LIMIT_MIB" ]; then pass "api memory"; else fail "api memory" "${api_mem} MiB"; fi
 if [ "$ui_mem" -le "$UI_MEM_LIMIT_MIB" ]; then pass "ui memory"; else fail "ui memory" "${ui_mem} MiB"; fi
+
+# The break-glass CLI shares the volume and uid, with no network; a disabled user's session ends at once.
+docker run --rm --network none --read-only --cap-drop ALL --user 10001:10001 -v "$VOLUME":/data \
+  "$API_IMAGE" admin disable admin >/dev/null || fail "cli disable admin" "exit $?"
+pass "cli disable admin exits 0"
+old_cookie=(-H "Cookie: commsgun_session=${SESSION}" -o /dev/null)
+code="$(ui_curl "${old_cookie[@]}" -w '%{http_code}' "$UI_URL/" || true)"
+location="$(ui_curl "${old_cookie[@]}" -w '%{redirect_url}' "$UI_URL/" || true)"
+case "$code $location" in
+  "303 "*/login*) pass "disabling a user ends their session" ;;
+  *) fail "disabling a user ends their session" "got $code to $location" ;;
+esac
 
 echo "smoke: ok"

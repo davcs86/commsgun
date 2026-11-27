@@ -7,9 +7,7 @@ every open row and retires the rows that no longer reproduce to `## Resolved`.
 
 ## Documentation that lies (docs claim behavior the code lacks)
 
-| What the docs say | What the code does | Evidence | Suggested action |
-|---|---|---|---|
-| Spec §11 ("Left to the builder") leaves the SQLite migration mechanism to the builder | None was built: `initSchema` has only an exact version check | `api/internal/store/store.go#initSchema` | Build migrations before the first schema change (API-02) |
+_None open._ See `## Resolved`.
 
 ## Latent bugs (looks broken, not merely non-obvious)
 
@@ -37,6 +35,7 @@ _None._
 
 | Was | Resolved | How confirmed |
 |---|---|---|
+| Spec §11 left the SQLite migration mechanism to the builder, but none was built (`initSchema` had only an exact version check) | 2026-11-27, `feat(store)` (`310d42c`) | `store/migrate.go#migrate` applies `migrations/NNNN_<name>.sql` forward only above `schema_version`; `initSchema` wraps it. `TestMigratesTodaysSchema`, `TestNewerDatabaseRefused` and `TestMigrationGapRefused` pass; API-02 is rewritten |
 | ⚠ `resend.go#Send` stored `ae.Name` raw into `attempts.provider_error` | 2026-11-15, `fix(provider)` | `Send` and `Status` share `safeErrorName` (`errorNamePattern` + `ProviderErrorNameMaxLen`); a failing name is stored as NULL. `TestResendSendSanitisesProviderErrorName` fails without the fix and passes with it |
 | Admin filter errors returned prose in `error` | 2026-11-15, `fix(admin)` | Snake codes `invalid_instant`, `invalid_range`, `range_too_long`, `invalid_channel`, `invalid_state`, `filter_too_long`, `invalid_cursor`; `TestAdminBadParams` asserts each code and the exact two-key body. The UI maps admin GET failures by status only (`ui/src/lib/server/api.ts#call`), and the e2e stub already sent `invalid_cursor` |
 | The `"range must not exceed 31 days"` literal duplicated `constants.AdminMaxRange` | 2026-11-15, `fix(admin)` | The prose is gone; the code is `range_too_long` |

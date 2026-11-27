@@ -45,17 +45,39 @@ const (
 	RateLimitDefaultPause    = time.Second
 	RateLimitMaxPause        = time.Hour
 
-	AdminDefaultRange = time.Hour
-	AdminMaxRange     = 31 * 24 * time.Hour
-	AdminFilterMaxLen = 200
-	AdminFacetCap     = 200
-	ProbeMaxBodyBytes = 4 << 10
+	AdminDefaultRange   = time.Hour
+	AdminMaxRange       = 31 * 24 * time.Hour
+	AdminFilterMaxLen   = 200
+	AdminFacetCap       = 200
+	ProbeMaxBodyBytes   = 4 << 10
+	AccountMaxBodyBytes = ProbeMaxBodyBytes
 
 	// IdempotencySafetyMargin keeps every send inside the provider's 24 h idempotency memory.
 	IdempotencySafetyMargin = 5 * time.Minute
 	AuthPause               = 10 * time.Minute
 	ReadPoolMax             = 4
 	ProviderErrorNameMaxLen = 64
+
+	Argon2MemoryKiB         = 19456
+	Argon2Time              = 2
+	Argon2Threads           = 1
+	Argon2SaltBytes         = 16
+	Argon2KeyBytes          = 32
+	PasswordHashConcurrency = 1
+	PasswordMinChars        = 16
+	PasswordMaxBytes        = 1024
+
+	UsernameMinLen          = 3
+	UsernameMaxLen          = 32
+	SessionTokenBytes       = 32
+	SessionTTL              = 12 * time.Hour
+	ReauthWindow            = 5 * time.Minute
+	ReauthMaxFailures       = 5
+	IdentitySubjectMaxBytes = 255
+
+	SMTPMaxSessions        = 8
+	SMTPReadTimeout        = 60 * time.Second
+	SMTPMaxMessagesPerConn = 10
 )
 
 // BucketStep maps a stats range up to MaxRange onto a series bucket; the last step has no bound.

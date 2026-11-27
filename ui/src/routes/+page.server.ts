@@ -3,9 +3,9 @@ import { createApi } from '#lib/server/api.js';
 import { getEnv } from '#lib/server/env.js';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ url, fetch }) => {
+export const load: PageServerLoad = async ({ url, fetch, locals }) => {
 	const filters = parseFilters(url.searchParams, new Date());
-	const api = createApi(getEnv(), fetch);
+	const api = createApi(getEnv(), fetch, locals.session?.token);
 	const [stats, overview, facets] = await Promise.all([
 		api.stats(filters),
 		api.overview(),

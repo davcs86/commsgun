@@ -1,7 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { SESSION_COOKIE } from '../src/lib/server/constants.js';
-import { deriveSessionKey, signSession } from '../src/lib/server/session.js';
 import type { Stats } from '../src/lib/types.js';
 import {
 	ACCEPTED_OUTCOMES,
@@ -9,22 +8,18 @@ import {
 	resetRequests,
 	SCENARIOS,
 	setScenario,
+	STUB_SESSION_TOKEN,
 	STUB_TOKEN,
-	STUB_URL,
-	TEST_ADMIN_PASSWORD,
-	TEST_SESSION_SECRET
+	STUB_URL
 } from './stub-api.js';
 
-const SESSION_KEY = deriveSessionKey(TEST_SESSION_SECRET, TEST_ADMIN_PASSWORD);
 const DAY_MS = 86_400_000;
 const COMPACT_TIME = (zone: string) =>
 	new RegExp(`^(\\d{4}-\\d{2}-\\d{2} )?\\d{2}:\\d{2} ${zone}$`);
 
 test.beforeEach(async ({ context, baseURL }) => {
 	await setScenario('normal');
-	await context.addCookies([
-		{ name: SESSION_COOKIE, value: signSession(SESSION_KEY, Date.now()), url: baseURL }
-	]);
+	await context.addCookies([{ name: SESSION_COOKIE, value: STUB_SESSION_TOKEN, url: baseURL }]);
 });
 
 const tile = (page: Page, label: string) =>
@@ -91,9 +86,7 @@ test('range chips work without JavaScript', async ({ browser, baseURL }) => {
 		baseURL,
 		extraHTTPHeaders: { 'x-forwarded-proto': 'http' }
 	});
-	await context.addCookies([
-		{ name: SESSION_COOKIE, value: signSession(SESSION_KEY, Date.now()), url: baseURL }
-	]);
+	await context.addCookies([{ name: SESSION_COOKIE, value: STUB_SESSION_TOKEN, url: baseURL }]);
 	const page = await context.newPage();
 	await page.goto('/?channel=email');
 	await chip(page, '24h').click();
@@ -256,7 +249,7 @@ test('stub stats never count more outcomes than sends, per bucket and in total',
 				to: new Date(to).toISOString()
 			});
 			const res = await fetch(`${STUB_URL}/admin/v1/stats?${q}`, {
-				headers: { authorization: `Bearer ${STUB_TOKEN}` }
+				headers: { authorization: `Bearer ${STUB_TOKEN}`, 'commsgun-session': STUB_SESSION_TOKEN }
 			});
 			const stats = (await res.json()) as Stats;
 			for (const point of [...stats.series, stats.totals]) {
@@ -366,11 +359,12 @@ test('empty scenario: zero tiles, an empty-chart message and no NaN', async ({ p
 	expect(await page.locator('body').innerText()).not.toContain('NaN');
 });
 
-test('down scenario: each section says the API is not responding; healthz stays 200', async ({
+// The whole API down is a 503 from the hook (login.spec.ts); here every data endpoint is down.
+test('data endpoints down: each section says the API is not responding; healthz stays 200', async ({
 	page,
 	request
 }) => {
-	await setScenario('down');
+	await setScenario('normal', ['stats', 'overview', 'facets']);
 	const response = await page.goto('/');
 	expect(response?.status()).toBe(200);
 	const alerts = page.getByRole('alert').filter({ hasText: 'The delivery API is not responding' });

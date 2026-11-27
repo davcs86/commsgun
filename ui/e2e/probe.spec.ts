@@ -1,7 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { SESSION_COOKIE } from '../src/lib/server/constants.js';
-import { deriveSessionKey, signSession } from '../src/lib/server/session.js';
 import {
 	PROBE_EMAIL_ID,
 	PROBE_LIMITED,
@@ -11,11 +10,9 @@ import {
 	resetRequests,
 	setProbeMode,
 	setScenario,
-	TEST_ADMIN_PASSWORD,
-	TEST_SESSION_SECRET
+	STUB_SESSION_TOKEN
 } from './stub-api.js';
 
-const SESSION_KEY = deriveSessionKey(TEST_SESSION_SECRET, TEST_ADMIN_PASSWORD);
 const KEY = '3f2b8c1e-5d4a-4e6f-9a1b-0c2d3e4f5a6b';
 const HELD_NOTICE =
 	'No SMS provider is configured. The message will be accepted and held, not delivered.';
@@ -28,9 +25,7 @@ test.use({
 
 test.beforeEach(async ({ context, baseURL }) => {
 	await setScenario('normal');
-	await context.addCookies([
-		{ name: SESSION_COOKIE, value: signSession(SESSION_KEY, Date.now()), url: baseURL }
-	]);
+	await context.addCookies([{ name: SESSION_COOKIE, value: STUB_SESSION_TOKEN, url: baseURL }]);
 });
 
 const dialog = (page: Page) => page.getByRole('dialog', { name: 'Send a hello-world probe' });
@@ -237,6 +232,10 @@ test('API down: the dialog says so, Retry recovers, and a failed send can be ret
 	await dialog(page).getByRole('button', { name: 'Retry' }).click();
 	await destination(page).fill('me@example.com');
 	await setScenario('down');
+	await sendButton(page).click();
+	await expect(dialog(page).getByRole('status')).toContainText('The API is unavailable.');
+	// Only the probe endpoint down: the hook passes and sendProbe itself reports unavailable.
+	await setScenario('normal', ['probes']);
 	await sendButton(page).click();
 	await expect(dialog(page).getByRole('status')).toContainText('The API is unavailable.');
 	await setScenario('normal');

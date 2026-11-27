@@ -27,3 +27,6 @@ flaky-report
 
 # Root .gitignore ignores lib/ (Python template)
 !/src/lib/
+
+# Test CA and keys made by e2e/stub-issuer.ts
+/e2e/.tls

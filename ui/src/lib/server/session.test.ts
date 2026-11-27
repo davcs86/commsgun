@@ -1,82 +1,13 @@
-import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
 	LOGIN_LIMITER_MAX_KEYS,
 	LOGIN_MAX_ATTEMPTS,
 	LOGIN_WINDOW_MS,
-	SESSION_TTL_MS
+	SESSION_TOKEN
 } from './constants';
-import {
-	LoginLimiter,
-	checkPassword,
-	deriveSessionKey,
-	safeNext,
-	signSession,
-	verifySession
-} from './session';
+import { LoginLimiter, safeNext } from './session';
 
-const SECRET = 'test-secret-0000000000000000000000000';
-const PASSWORD = 'password-A-000000';
-const KEY = deriveSessionKey(SECRET, PASSWORD);
 const NOW = 1_800_000_000_000;
-const validCookie = signSession(KEY, NOW);
-const b64url = (s: string) => Buffer.from(s).toString('base64url');
-
-describe('session cookie', () => {
-	it('accepts a fresh cookie and rejects it after 12h', () => {
-		expect(verifySession(KEY, validCookie, NOW)).toBe(true);
-		expect(verifySession(KEY, validCookie, NOW + SESSION_TTL_MS - 1)).toBe(true);
-		expect(verifySession(KEY, validCookie, NOW + SESSION_TTL_MS)).toBe(false);
-	});
-
-	it('rejects a cookie signed with another secret', () => {
-		const other = deriveSessionKey('other-secret-00000000000000000000000', PASSWORD);
-		expect(verifySession(other, validCookie, NOW)).toBe(false);
-	});
-
-	it('rejects a cookie signed before the admin password changed', () => {
-		expect(verifySession(deriveSessionKey(SECRET, 'password-B-000000'), validCookie, NOW)).toBe(
-			false
-		);
-	});
-
-	it('derives a stable key that is neither the secret nor the password', () => {
-		expect(deriveSessionKey(SECRET, PASSWORD).equals(KEY)).toBe(true);
-		expect(KEY.toString('utf8')).not.toContain(SECRET);
-		expect(KEY.toString('utf8')).not.toContain(PASSWORD);
-	});
-
-	it('rejects a validly signed payload that lacks a numeric exp', () => {
-		const payload = b64url(JSON.stringify({ exp: 'x' }));
-		const sig = createHmac('sha256', KEY).update(payload).digest('base64url');
-		expect(verifySession(KEY, `${payload}.${sig}`, NOW)).toBe(false);
-	});
-
-	const forgedSig = createHmac('sha256', 'wrong').update('eyJleHAiOiJ4In0').digest('base64url');
-	it.each([
-		['empty', ''],
-		['undefined', undefined],
-		['garbage', 'garbage'],
-		['three parts', 'a.b.c'],
-		['truncated signature', validCookie.slice(0, -2)],
-		['trailing char', validCookie + 'x'],
-		['bad signature', 'eyJleHAiOiJ4In0.' + forgedSig],
-		['non-base64 chars', '!!!.???'],
-		['non-canonical signature', validCookie + '=']
-	])('verifySession(%s) is false and does not throw', (_name, value) => {
-		expect(() => verifySession(KEY, value, NOW)).not.toThrow();
-		expect(verifySession(KEY, value, NOW)).toBe(false);
-	});
-});
-
-describe('checkPassword', () => {
-	it('is true only for an exact match', () => {
-		expect(checkPassword('correct-horse', 'correct-horse')).toBe(true);
-		expect(checkPassword('correct', 'correct-horse')).toBe(false);
-		expect(checkPassword('correct-horse-x', 'correct-horse')).toBe(false);
-		expect(checkPassword('', 'correct-horse')).toBe(false);
-	});
-});
 
 describe('LoginLimiter', () => {
 	it('allows 5 then blocks until 60s have passed; keys are independent', () => {
@@ -135,8 +66,27 @@ describe('safeNext', () => {
 		['/.///evil.example', '/'],
 		['/login/', '/'],
 		['/logout?x=1', '/'],
-		['/a/../messages', '/messages']
+		['/a/../messages', '/messages'],
+		['/login/sso', '/'],
+		['/login/sso/', '/'],
+		['/login/sso?next=/x', '/'],
+		['/auth/callback', '/'],
+		['/auth/callback?code=x&state=y', '/'],
+		['/auth/link', '/'],
+		['/auth/', '/'],
+		['/a/../auth/callback', '/'],
+		['/authors', '/authors']
 	])('safeNext(%s) is %s', (input, want) => {
 		expect(safeNext(input)).toBe(want);
+	});
+});
+
+describe('SESSION_TOKEN', () => {
+	it('matches only 43 base64url characters, the API token shape', () => {
+		expect(SESSION_TOKEN.test('A'.repeat(42) + '_')).toBe(true);
+		expect(SESSION_TOKEN.test('a-'.repeat(21) + 'z')).toBe(true);
+		for (const bad of ['', 'a'.repeat(42), 'a'.repeat(44), '!'.repeat(43), 'a'.repeat(42) + '=']) {
+			expect(SESSION_TOKEN.test(bad)).toBe(false);
+		}
 	});
 });

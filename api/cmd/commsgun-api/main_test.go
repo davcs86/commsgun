@@ -3,9 +3,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
+	"net/textproto"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +39,7 @@ const (
 	rcptA      = "alice-unique@rcpt.example"
 	rcptB      = "bob-unique@rcpt.example"
 	failedText = "provider-said-unique-9042"
+	adminPass  = "admin-password-unique-8823"
 )
 
 type lockedBuf struct {
@@ -53,10 +65,14 @@ func configJSON() string {
 		`"providers":{"email":{"name":"fake","per_minute":100,"per_day":1000},"sms":null}}`
 }
 
-func envFor(dir string) func(string) string {
+func envFor(dir string, extra map[string]string) func(string) string {
 	m := map[string]string{
 		"COMMSGUN_CONFIG": configJSON(), "COMMSGUN_ALLOW_FAKE": "1",
 		"ADMIN_API_TOKEN": adminToken, "DATA_DIR": dir,
+		"ENQUEUE_ADDR": "127.0.0.1:0", "ADMIN_ADDR": "127.0.0.1:0",
+	}
+	for k, v := range extra {
+		m[k] = v
 	}
 	return func(k string) string { return m[k] }
 }
@@ -68,13 +84,19 @@ type proc struct {
 	done       chan error
 	dir        string
 	stoppedErr error
+	session    string
 }
 
 func start(t *testing.T, wrap func(provider.Provider) provider.Provider) *proc {
 	t.Helper()
+	return startEnv(t, wrap, nil)
+}
+
+func startEnv(t *testing.T, wrap func(provider.Provider) provider.Provider, extra map[string]string) *proc {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &proc{out: &lockedBuf{}, cancel: cancel, done: make(chan error, 1), dir: t.TempDir()}
-	go func() { p.done <- runWith(ctx, envFor(p.dir), p.out, "127.0.0.1:0", "127.0.0.1:0", wrap) }()
+	go func() { p.done <- runWith(ctx, envFor(p.dir, extra), p.out, wrap) }()
 	t.Cleanup(func() { p.stop(t) })
 	waitFor(t, 5*time.Second, "listeners", func() bool {
 		p.enq, p.adm = p.addr("enqueue"), p.addr("admin")
@@ -148,9 +170,30 @@ func enqueueHeaders(idem string) map[string]string {
 	}
 }
 
+// login creates a user and a session through the admin API once (import, then sessions/local).
+func (p *proc) login(t *testing.T) string {
+	t.Helper()
+	if p.session != "" {
+		return p.session
+	}
+	bearer := map[string]string{"Authorization": "Bearer " + adminToken}
+	creds := `{"username":"admin","password":"` + adminPass + `"}`
+	if code, body := do(t, http.MethodPost, "http://"+p.adm+"/admin/v1/bootstrap/import", bearer, creds); code != http.StatusOK {
+		t.Fatalf("import: %d %s", code, body)
+	}
+	code, body := do(t, http.MethodPost, "http://"+p.adm+"/admin/v1/sessions/local", bearer, creds)
+	var ses struct{ Token string }
+	if code != http.StatusCreated || json.Unmarshal([]byte(body), &ses) != nil || ses.Token == "" {
+		t.Fatalf("sessions/local: %d %s", code, body)
+	}
+	p.session = ses.Token
+	return p.session
+}
+
 func (p *proc) adminMessages(t *testing.T) []model.Message {
 	t.Helper()
-	code, body := do(t, http.MethodGet, "http://"+p.adm+"/admin/v1/messages", map[string]string{"Authorization": "Bearer " + adminToken}, "")
+	hdr := map[string]string{"Authorization": "Bearer " + adminToken, "Commsgun-Session": p.login(t)}
+	code, body := do(t, http.MethodGet, "http://"+p.adm+"/admin/v1/messages", hdr, "")
 	if code != http.StatusOK {
 		t.Fatalf("admin messages: %d %s", code, body)
 	}
@@ -250,6 +293,7 @@ func TestLogsCarryNoSecretsOrAddresses(t *testing.T) {
 	for name, secret := range map[string]string{
 		"app key": appKey, "admin token": adminToken, "recipient A": rcptA, "recipient B": rcptB,
 		"sender": "alerts-unique@sender.example", "subject": subject, "text body": textBody, "provider text": failedText,
+		"admin password": adminPass, "session token": p.session,
 	} {
 		if strings.Contains(logs, secret) {
 			t.Errorf("log contains %s", name)
@@ -265,7 +309,7 @@ func TestRefusesToStartOnBadConfig(t *testing.T) {
 		}
 		return map[string]string{"COMMSGUN_CONFIG": "{}", "DATA_DIR": t.TempDir()}[k]
 	}
-	err := run(context.Background(), env, out, "127.0.0.1:0", "127.0.0.1:0")
+	err := run(context.Background(), env, out)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -343,5 +387,90 @@ func TestBuildProvidersOneCheckerPerChannel(t *testing.T) {
 		if c := checkers[worker.CheckerKey{Channel: ch, Provider: "fake"}]; c != p.(provider.StatusChecker) {
 			t.Fatalf("%s checker is not that channel's provider instance", ch)
 		}
+	}
+}
+
+// ENQUEUE_ADDR/ADMIN_ADDR 127.0.0.1:0 honoured; no smtp listener by default
+func TestAddressesFromEnv(t *testing.T) {
+	p := start(t, nil)
+	for _, a := range []string{p.enq, p.adm} {
+		if host, port, err := net.SplitHostPort(a); err != nil || host != "127.0.0.1" || port == "0" || port == "9200" || port == "9201" {
+			t.Errorf("listener on %q, want 127.0.0.1 and an ephemeral port", a)
+		}
+	}
+	waitHealthy(t, p.enq)
+	if a := p.addr("smtp"); a != "" {
+		t.Errorf("smtp listener on %q without SMTP_ADDR", a)
+	}
+}
+
+// writeCert writes a self-signed certificate and its key as PEM files under dir.
+func writeCert(t *testing.T, dir string) (certFile, keyFile string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "smtp.test"},
+		DNSNames: []string{"smtp.test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kder, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certFile, keyFile = filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	for f, b := range map[string]*pem.Block{certFile: {Type: "CERTIFICATE", Bytes: der}, keyFile: {Type: "EC PRIVATE KEY", Bytes: kder}} {
+		if err := os.WriteFile(f, pem.EncodeToMemory(b), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return certFile, keyFile
+}
+
+// SMTP_ADDR + test cert files → "listening" smtp; unreadable cert → run() error before any bind
+func TestSMTPOnWithCertificate(t *testing.T) {
+	cert, key := writeCert(t, t.TempDir())
+	p := startEnv(t, nil, map[string]string{"SMTP_ADDR": "127.0.0.1:0", "SMTP_TLS_CERT_FILE": cert, "SMTP_TLS_KEY_FILE": key})
+	var smtpAddr string
+	waitFor(t, 5*time.Second, "smtp listener", func() bool { smtpAddr = p.addr("smtp"); return smtpAddr != "" })
+	conn, err := net.DialTimeout("tcp", smtpAddr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	tp := textproto.NewConn(conn)
+	if _, _, err := tp.ReadResponse(220); err != nil {
+		t.Fatalf("greeting: %v", err)
+	}
+	if err := tp.PrintfLine("EHLO client.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, msg, err := tp.ReadResponse(250); err != nil || !strings.Contains(msg, "STARTTLS") {
+		t.Fatalf("EHLO: %q %v", msg, err)
+	}
+	if err := tp.PrintfLine("QUIT"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tp.ReadResponse(221); err != nil {
+		t.Fatalf("QUIT: %v", err)
+	}
+	p.stop(t)
+	if p.stoppedErr != nil {
+		t.Fatalf("run returned %v on clean shutdown", p.stoppedErr)
+	}
+
+	out := &lockedBuf{}
+	missing := filepath.Join(t.TempDir(), "absent.pem")
+	err = run(context.Background(), envFor(t.TempDir(), map[string]string{
+		"SMTP_ADDR": "127.0.0.1:0", "SMTP_TLS_CERT_FILE": missing, "SMTP_TLS_KEY_FILE": key}), out)
+	if err == nil || !strings.Contains(err.Error(), "SMTP_TLS") {
+		t.Fatalf("unreadable cert: err %v", err)
+	}
+	if strings.Contains(out.String(), "listening") {
+		t.Errorf("bound a port despite an unreadable certificate:\n%s", out.String())
 	}
 }

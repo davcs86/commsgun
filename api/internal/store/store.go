@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,10 +19,9 @@ import (
 var schemaSQL string
 
 const (
-	dbFile        = "commsgun.db"
-	schemaVersion = 1
-	sqliteBusy    = 5
-	sqliteFull    = 13
+	dbFile     = "commsgun.db"
+	sqliteBusy = 5
+	sqliteFull = 13
 )
 
 var ErrBusy = errors.New("store: database busy or full")
@@ -86,29 +86,13 @@ func (s *Store) Close() error {
 	return err
 }
 
+// initSchema migrates w from ddl (version 1) through the embedded migrations.
 func initSchema(w *sql.DB, ddl string) error {
-	tx, err := w.Begin()
+	migrations, err := fs.Sub(migrationFiles, "migrations")
 	if err != nil {
-		return translate(err)
+		return err
 	}
-	defer tx.Rollback()
-	var n int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name='schema_version'`).Scan(&n); err != nil {
-		return translate(err)
-	}
-	if n == 0 {
-		if _, err := tx.Exec(ddl); err != nil {
-			return translate(err)
-		}
-	}
-	var v int
-	if err := tx.QueryRow(`SELECT version FROM schema_version`).Scan(&v); err != nil {
-		return translate(err)
-	}
-	if v != schemaVersion {
-		return fmt.Errorf("store: schema version %d, want %d", v, schemaVersion)
-	}
-	return translate(tx.Commit())
+	return migrate(w, ddl, migrations)
 }
 
 // translate maps lock/full conditions to ErrBusy and passes other errors through.

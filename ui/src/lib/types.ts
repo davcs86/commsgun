@@ -98,3 +98,12 @@ export type Overview = {
 	oldest_waiting_at: string | null;
 	providers: ProviderStatus[];
 };
+
+// Spec 12.7; mirrored by ui/e2e/stub-api.ts and the Go producers (CG-01).
+export type AuthMode = 'local' | 'oidc' | 'both';
+
+export type User = { id: string; username: string; role: 'admin' };
+
+export type Session = { token: string; expires_at: string; user: User };
+
+export type SessionInfo = { user: User; kind: 'local' | 'oidc'; expires_at: string };

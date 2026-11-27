@@ -3,10 +3,10 @@ import { createApi } from '#lib/server/api.js';
 import { getEnv } from '#lib/server/env.js';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ url, fetch }) => {
+export const load: PageServerLoad = async ({ url, fetch, locals }) => {
 	const filters = parseFilters(url.searchParams, new Date());
 	const cursor = url.searchParams.get('cursor') || undefined;
-	const api = createApi(getEnv(), fetch);
+	const api = createApi(getEnv(), fetch, locals.session?.token);
 	const [messages, facets] = await Promise.all([api.messages(filters, cursor), api.facets()]);
 	return { filters, messages, facets };
 };

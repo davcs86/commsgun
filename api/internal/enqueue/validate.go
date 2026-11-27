@@ -129,7 +129,7 @@ func recipients(ch model.Channel, to []string) ([]string, *ValidationError) {
 	seen := make(map[string]bool, len(to))
 	out := make([]string, 0, len(to))
 	for _, r := range to {
-		if !validRecipient(ch, r) {
+		if !ValidRecipient(ch, r) {
 			return nil, &ValidationError{Message: "invalid_recipient", Field: fieldTo}
 		}
 		k := strings.ToLower(r)
@@ -141,7 +141,8 @@ func recipients(ch model.Channel, to []string) ([]string, *ValidationError) {
 	return out, nil
 }
 
-func validRecipient(ch model.Channel, r string) bool {
+// ValidRecipient is the enqueue path's per-recipient check for channel ch.
+func ValidRecipient(ch model.Channel, r string) bool {
 	if ch == model.ChannelSMS {
 		return e164.MatchString(r)
 	}

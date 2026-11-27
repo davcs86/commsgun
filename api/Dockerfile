@@ -18,5 +18,5 @@ COPY --from=build --chown=10001:10001 /out/data /data
 USER 10001:10001
 ENV DATA_DIR=/data
 VOLUME /data
-EXPOSE 9200 9201
+EXPOSE 9200 9201 9203
 ENTRYPOINT ["/commsgun-api"]

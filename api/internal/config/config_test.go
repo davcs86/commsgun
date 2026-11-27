@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/davcs86/commsgun/api/internal/constants"
 	"github.com/davcs86/commsgun/api/internal/model"
 )
 
@@ -213,6 +215,134 @@ func TestAuthenticate(t *testing.T) {
 	} {
 		if a, ok := c.Authenticate(tc[0], tc[1]); ok || a != nil {
 			t.Errorf("%s: authenticated (%v, %v)", name, a, ok)
+		}
+	}
+}
+
+// unset → local; "oidc","both" accepted; "OIDC", "sso" → Load error naming AUTH_MODE
+func TestAuthModeConfig(t *testing.T) {
+	for _, c := range []struct {
+		env  string
+		want AuthMode
+	}{{"", AuthLocal}, {"local", AuthLocal}, {"oidc", AuthOIDC}, {"both", AuthBoth}} {
+		e := baseEnv()
+		if c.env != "" {
+			e["AUTH_MODE"] = c.env
+		}
+		cfg, err := load(t, validDoc(), e)
+		if err != nil {
+			t.Errorf("AUTH_MODE=%q: %v", c.env, err)
+		} else if cfg.AuthMode != c.want {
+			t.Errorf("AUTH_MODE=%q: mode %q, want %q", c.env, cfg.AuthMode, c.want)
+		}
+	}
+	for _, v := range []string{"OIDC", "sso", " local"} {
+		e := baseEnv()
+		e["AUTH_MODE"] = v
+		if _, err := load(t, validDoc(), e); err == nil || !strings.Contains(err.Error(), "AUTH_MODE") {
+			t.Errorf("AUTH_MODE=%q: err %v, want one naming AUTH_MODE", v, err)
+		}
+	}
+	allows := map[AuthMode][2]bool{AuthLocal: {true, false}, AuthOIDC: {false, true}, AuthBoth: {true, true}}
+	for m, want := range allows {
+		if m.Allows(model.KindLocal) != want[0] || m.Allows(model.KindOIDC) != want[1] {
+			t.Errorf("%s.Allows: local %v oidc %v, want %v", m, m.Allows(model.KindLocal), m.Allows(model.KindOIDC), want)
+		}
+	}
+}
+
+// smtp_submission default false; send_window_seconds default 86400; 0, 86401 → Load error
+func TestSMTPAppConfig(t *testing.T) {
+	c, err := load(t, validDoc(), baseEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := c.Apps["a"]; a.SMTPSubmission || a.SendWindow != constants.MaxSendWindow {
+		t.Errorf("defaults: smtp %v window %v", a.SMTPSubmission, a.SendWindow)
+	}
+	d := validDoc()
+	app0(d)["smtp_submission"] = true
+	app0(d)["send_window_seconds"] = 3600
+	if c, err = load(t, d, baseEnv()); err != nil {
+		t.Fatal(err)
+	}
+	if a := c.Apps["a"]; !a.SMTPSubmission || a.SendWindow != time.Hour {
+		t.Errorf("set: smtp %v window %v", a.SMTPSubmission, a.SendWindow)
+	}
+	app0(d)["send_window_seconds"] = 86400
+	if c, err = load(t, d, baseEnv()); err != nil || c.Apps["a"].SendWindow != constants.MaxSendWindow {
+		t.Errorf("86400: %v", err)
+	}
+	for _, v := range []any{0, -1, 86401, 1 << 62} {
+		app0(d)["send_window_seconds"] = v
+		if _, err := load(t, d, baseEnv()); err == nil || !strings.Contains(err.Error(), "send_window_seconds") {
+			t.Errorf("send_window_seconds=%v: err %v", v, err)
+		}
+	}
+}
+
+// smtp app + key → ok; non-smtp app with its key → false; unknown app → false
+func TestAuthenticateSMTP(t *testing.T) {
+	d := validDoc()
+	d["apps"] = append(d["apps"].([]any), doc{"id": "b", "key": key2, "smtp_submission": true,
+		"channels": doc{"sms": doc{"per_minute": 1, "per_day": 1}}})
+	c, err := load(t, d, baseEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, ok := c.AuthenticateSMTP("b", key2); !ok || a == nil || a.ID != "b" {
+		t.Errorf("smtp app: got %v %v", a, ok)
+	}
+	for name, tc := range map[string][2]string{
+		"non-smtp app": {"a", key1},
+		"wrong key":    {"b", key1},
+		"unknown app":  {"zzz", key2},
+	} {
+		if a, ok := c.AuthenticateSMTP(tc[0], tc[1]); ok || a != nil {
+			t.Errorf("%s: authenticated (%v, %v)", name, a, ok)
+		}
+	}
+}
+
+// defaults; SMTP_ADDR without TLS files, TLS files without SMTP_ADDR, "9203" → Load error
+func TestListenerAddressConfig(t *testing.T) {
+	c, err := load(t, validDoc(), baseEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EnqueueAddr != ":9200" || c.AdminAddr != ":9201" || c.SMTPAddr != "" ||
+		c.SMTPTLSCertFile != "" || c.SMTPTLSKeyFile != "" {
+		t.Errorf("defaults: %q %q %q %q %q", c.EnqueueAddr, c.AdminAddr, c.SMTPAddr, c.SMTPTLSCertFile, c.SMTPTLSKeyFile)
+	}
+	e := baseEnv()
+	e["ENQUEUE_ADDR"], e["ADMIN_ADDR"], e["SMTP_ADDR"] = "10.0.0.2:9200", "10.0.0.2:9201", "10.0.1.2:9203"
+	e["SMTP_TLS_CERT_FILE"], e["SMTP_TLS_KEY_FILE"] = "/tls/cert.pem", "/tls/key.pem"
+	if c, err = load(t, validDoc(), e); err != nil {
+		t.Fatal(err)
+	}
+	if c.EnqueueAddr != "10.0.0.2:9200" || c.AdminAddr != "10.0.0.2:9201" || c.SMTPAddr != "10.0.1.2:9203" ||
+		c.SMTPTLSCertFile != "/tls/cert.pem" || c.SMTPTLSKeyFile != "/tls/key.pem" {
+		t.Errorf("set: %+v", c)
+	}
+	for name, tc := range map[string]struct {
+		env  env
+		want string
+	}{
+		"smtp without cert":   {env{"SMTP_ADDR": ":9203", "SMTP_TLS_KEY_FILE": "/k"}, "SMTP_TLS_CERT_FILE"},
+		"smtp without key":    {env{"SMTP_ADDR": ":9203", "SMTP_TLS_CERT_FILE": "/c"}, "SMTP_TLS_KEY_FILE"},
+		"cert without smtp":   {env{"SMTP_TLS_CERT_FILE": "/c"}, "SMTP_TLS_CERT_FILE"},
+		"key without smtp":    {env{"SMTP_TLS_KEY_FILE": "/k"}, "SMTP_TLS_KEY_FILE"},
+		"enqueue bare port":   {env{"ENQUEUE_ADDR": "9200"}, "ENQUEUE_ADDR"},
+		"admin bare port":     {env{"ADMIN_ADDR": "9201"}, "ADMIN_ADDR"},
+		"smtp bare port":      {env{"SMTP_ADDR": "9203", "SMTP_TLS_CERT_FILE": "/c", "SMTP_TLS_KEY_FILE": "/k"}, "SMTP_ADDR"},
+		"enqueue three parts": {env{"ENQUEUE_ADDR": "a:b:9200"}, "ENQUEUE_ADDR"},
+	} {
+		e := baseEnv()
+		for k, v := range tc.env {
+			e[k] = v
+		}
+		if _, err := load(t, validDoc(), e); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err %v, want one naming %s", name, err, tc.want)
 		}
 	}
 }

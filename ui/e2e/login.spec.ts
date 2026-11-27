@@ -1,9 +1,18 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type APIResponse, type Page } from '@playwright/test';
 import { SESSION_COOKIE } from '../src/lib/server/constants.js';
-import { TEST_ADMIN_PASSWORD as PASSWORD } from './stub-api.js';
+import {
+	issuedSessions,
+	sessionCalls,
+	setAuth,
+	setScenario,
+	STUB_SESSION_TOKEN,
+	TEST_ADMIN_PASSWORD as PASSWORD
+} from './stub-api.js';
 
-// Each test posts from its own x-forwarded-for address, so each has its own limiter budget.
+// Only these specs drive the form (UI-05). Each posts from its own x-forwarded-for address, so each has
+// its own limiter budget.
 test.beforeEach(async ({ context }, testInfo) => {
+	await setScenario('normal');
 	await context.setExtraHTTPHeaders({
 		'x-forwarded-proto': 'http',
 		'x-forwarded-for': `test-${testInfo.testId}`
@@ -62,7 +71,34 @@ test('right credentials land on next and set a hardened cookie', async ({ page, 
 	await submit(page, 'admin', PASSWORD);
 	await expect(page).toHaveURL(/\/healthz$/);
 	const cookie = (await context.cookies()).find((c) => c.name === SESSION_COOKIE);
-	expect(cookie).toMatchObject({ httpOnly: true, secure: true, sameSite: 'Strict' });
+	expect(cookie).toMatchObject({
+		value: STUB_SESSION_TOKEN,
+		httpOnly: true,
+		secure: true,
+		sameSite: 'Strict',
+		path: '/'
+	});
+	const [expiresAt] = await issuedSessions();
+	expect(Math.abs((cookie?.expires ?? 0) * 1000 - Date.parse(expiresAt))).toBeLessThan(60_000);
+});
+
+test('an API that refuses the bearer is an API error, not a credentials message', async ({
+	page,
+	context
+}) => {
+	await setAuth({ mode: 'local', sessionsLocal: 'unauthorized' });
+	await page.goto('/login');
+	await submit(page, 'admin', PASSWORD);
+	await expect(page.getByText('The delivery API returned an error')).toBeVisible();
+	await expect(page.getByText('Incorrect username or password')).toHaveCount(0);
+	expect((await context.cookies()).find((c) => c.name === SESSION_COOKIE)).toBeUndefined();
+});
+
+test('a mode that refuses password sessions says password sign-in is off', async ({ page }) => {
+	await setAuth({ mode: 'local', sessionsLocal: 'mode' });
+	await page.goto('/login');
+	await submit(page, 'admin', PASSWORD);
+	await expect(page.getByText('Password sign-in is turned off')).toBeVisible();
 });
 
 test('an external next is ignored', async ({ page }) => {
@@ -78,8 +114,110 @@ test('logout clears the cookie and / redirects to /login', async ({ page, contex
 	await page.getByRole('button', { name: 'Sign out' }).click();
 	await expect(page).toHaveURL(/\/login$/);
 	expect((await context.cookies()).find((c) => c.name === SESSION_COOKIE)).toBeUndefined();
+	expect(await sessionCalls()).toContainEqual({ method: 'DELETE', session: STUB_SESSION_TOKEN });
 	await page.goto('/');
 	await expect(page).toHaveURL(/\/login\?next=%2F$/);
+});
+
+test('logout clears the cookie even when the API does not answer', async ({ page, context }) => {
+	await page.goto('/login');
+	await submit(page, 'admin', PASSWORD);
+	await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+	await setScenario('down');
+	await page.getByRole('button', { name: 'Sign out' }).click();
+	await expect(page).toHaveURL(/\/login$/);
+	expect((await context.cookies()).find((c) => c.name === SESSION_COOKIE)).toBeUndefined();
+});
+
+test('a cookie the API refuses redirects to /login and is deleted', async ({
+	page,
+	context,
+	baseURL
+}) => {
+	const refused = 'fake-session-token-refused-0000000000000000';
+	expect(refused).toHaveLength(43);
+	await context.addCookies([{ name: SESSION_COOKIE, value: refused, url: baseURL }]);
+	const response = await page.goto('/messages');
+	expect(response?.url()).toMatch(/\/login\?next=%2Fmessages$/);
+	expect((await context.cookies()).find((c) => c.name === SESSION_COOKIE)).toBeUndefined();
+	expect(await sessionCalls()).toEqual([{ method: 'GET', session: refused }]);
+});
+
+const deletesCookie = (response: APIResponse) =>
+	response
+		.headersArray()
+		.some(
+			(h) =>
+				h.name.toLowerCase() === 'set-cookie' &&
+				h.value.startsWith(`${SESSION_COOKIE}=;`) &&
+				/Max-Age=0/i.test(h.value)
+		);
+
+test('logout still revokes a well-formed cookie the hook could not validate', async ({
+	request,
+	baseURL
+}) => {
+	await setScenario('normal', ['session_check']);
+	const response = await request.post('/logout', {
+		headers: { cookie: `${SESSION_COOKIE}=${STUB_SESSION_TOKEN}`, origin: String(baseURL) },
+		maxRedirects: 0
+	});
+	expect(response.status()).toBe(303);
+	expect(response.headers()['location']).toBe('/login');
+	expect(deletesCookie(response)).toBe(true);
+	expect(await sessionCalls()).toEqual([
+		{ method: 'GET', session: STUB_SESSION_TOKEN },
+		{ method: 'DELETE', session: STUB_SESSION_TOKEN }
+	]);
+});
+
+// Review Focus 4: a malformed cookie is signed out without asking the API.
+for (const [name, value] of [
+	['empty', ''],
+	['42 characters', 'a'.repeat(42)],
+	['44 characters', 'a'.repeat(44)],
+	['10 KB', 'a'.repeat(10240)],
+	['non-base64url', '!'.repeat(43)]
+]) {
+	test(`a junk cookie (${name}) is signed out without an API call and deleted`, async ({
+		request
+	}) => {
+		const response = await request.get('/', {
+			headers: { cookie: `${SESSION_COOKIE}=${value}` },
+			maxRedirects: 0
+		});
+		expect(response.status()).toBe(303);
+		expect(response.headers()['location']).toBe('/login?next=%2F');
+		expect(deletesCookie(response)).toBe(true);
+		expect(await sessionCalls()).toEqual([]);
+	});
+}
+
+// Review Focus 1: an unreachable API is a 503, never a sign-out.
+test('with the API down a valid cookie gets a 503, keeps the cookie and is not redirected', async ({
+	page,
+	context,
+	baseURL,
+	request
+}) => {
+	await context.addCookies([{ name: SESSION_COOKIE, value: STUB_SESSION_TOKEN, url: baseURL }]);
+	await setScenario('down');
+	for (const path of ['/', '/messages']) {
+		const response = await page.goto(path);
+		expect(response?.status()).toBe(503);
+		expect(response?.url()).toBe(`${baseURL}${path}`);
+		await expect(page.getByText('The delivery API is not responding')).toBeVisible();
+	}
+	expect((await context.cookies()).find((c) => c.name === SESSION_COOKIE)?.value).toBe(
+		STUB_SESSION_TOKEN
+	);
+	const direct = await request.get('/', {
+		headers: { cookie: `${SESSION_COOKIE}=${STUB_SESSION_TOKEN}` },
+		maxRedirects: 0
+	});
+	expect(direct.status()).toBe(503);
+	expect(deletesCookie(direct)).toBe(false);
+	expect((await request.get('/healthz')).status()).toBe(200);
 });
 
 test('the 6th attempt within a minute is rate limited', async ({ page }) => {
