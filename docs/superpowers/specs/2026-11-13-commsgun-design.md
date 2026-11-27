@@ -919,7 +919,7 @@ Residuals for the owner to accept or reject:
    § 4.3). If that strip is missing, commsgun still ignores the cookie.
 3. Anyone who holds `ADMIN_API_TOKEN` and can reach the admin listener (the `commsgun` network, or the droplet's host
    network) can mint a session for any linked person: `POST /admin/v1/sessions/oidc` needs no session, the issuer is
-   public, and a `sub` is not a secret (it is each lldap user's `sso_sub` attribute and is in the edge's backup). The
+   public, and a `sub` is not a secret (it is each lldap user's `sso-sub` attribute and is in the edge's backup). The
    API trusts the UI's ID-token checks (SSO spec § 3). So the session header protects message data from the token
    alone only while no identity is linked. A compromised UI container also sees every password typed while it is
    compromised.
