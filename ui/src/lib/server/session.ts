@@ -1,6 +1,6 @@
 import { LOGIN_LIMITER_MAX_KEYS, LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_MS } from './constants';
 
-// Only a plain same-origin path is honoured; login and logout targets and anything odd map to "/".
+// Only a plain same-origin path is honoured; login, logout and SSO targets and anything odd map to "/".
 export function safeNext(next: string | null): string {
 	if (!next || !next.startsWith('/') || next.startsWith('//')) return '/';
 	// eslint-disable-next-line no-control-regex -- control characters are exactly what is rejected
@@ -10,7 +10,7 @@ export function safeNext(next: string | null): string {
 		if (url.origin !== 'http://x') return '/';
 		const { pathname } = url;
 		if (pathname.startsWith('//')) return '/';
-		if (/^\/(login|logout)\/?$/.test(pathname)) return '/';
+		if (/^\/(login|logout|login\/sso)\/?$/.test(pathname) || /^\/auth\//.test(pathname)) return '/';
 		const result = pathname + url.search;
 		const again = new URL(result, 'http://x');
 		if (again.origin !== 'http://x' || again.pathname !== pathname) return '/';

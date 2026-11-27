@@ -104,6 +104,7 @@ func migrateBase(w *sql.DB, base string, latest int) (v int, err error) {
 	return v, tx.Commit()
 }
 
+// applyMigration re-reads the version under the write lock: another process may have applied n already.
 func applyMigration(w *sql.DB, n int, ddl string) (err error) {
 	tx, err := w.Begin()
 	if err != nil {
@@ -115,11 +116,25 @@ func applyMigration(w *sql.DB, n int, ddl string) (err error) {
 			err = translate(err)
 		}
 	}()
+	var v int
+	if err = tx.QueryRow(`SELECT version FROM schema_version`).Scan(&v); err != nil {
+		return err
+	}
+	if v >= n {
+		return tx.Rollback()
+	}
+	if v != n-1 {
+		return fmt.Errorf("store: schema version %d, want %d", v, n-1)
+	}
 	if _, err = tx.Exec(ddl); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE schema_version SET version=?`, n); err != nil {
+	res, err := tx.Exec(`UPDATE schema_version SET version=? WHERE version=?`, n, n-1)
+	if err != nil {
 		return err
+	}
+	if k, _ := res.RowsAffected(); k != 1 {
+		return fmt.Errorf("store: schema version moved during migration %04d", n)
 	}
 	return tx.Commit()
 }

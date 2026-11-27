@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
+// A .ts path: node runs this file directly, with no .js to resolve.
+import { MIN_ADMIN_PASSWORD } from '../src/lib/server/constants.ts';
 
 export const STUB_PORT = 4181;
 export const STUB_URL = `http://127.0.0.1:${STUB_PORT}`;
@@ -370,6 +372,8 @@ type State = {
 	issued: string[];
 	oidcSessions: OidcSessionBody[];
 	reauthed: Set<string>;
+	reauthFailures: Map<string, number>;
+	revoked: Set<string>;
 	identityCalls: IdentityCall[];
 };
 
@@ -459,7 +463,44 @@ function handleAdmin(state: State, res: ServerResponse, url: URL, route: string)
 // Mirrors the API: the bearer first, then the session on every route but these four.
 // The API's store.ValidUsername (CG-01).
 const USERNAME = /^[a-z0-9._-]{3,32}$/;
+// constants.PasswordMaxBytes, IdentitySubjectMaxBytes and ReauthMaxFailures (CG-01).
+const PASSWORD_MAX_BYTES = 1024;
+const IDENTITY_SUBJECT_MAX_BYTES = 255;
+const REAUTH_MAX_FAILURES = 5;
+
+// The API's password.Valid (CG-01).
+function validPassword(pw: unknown): boolean {
+	const v = typeof pw === 'string' ? pw : '';
+	return Buffer.byteLength(v) <= PASSWORD_MAX_BYTES && [...v].length >= MIN_ADMIN_PASSWORD;
+}
+
+// The API's identityField: iss first, then sub (CG-01).
+function identityField(body: Record<string, unknown>): 'iss' | 'sub' | null {
+	try {
+		const u = new URL(String(body.iss ?? ''));
+		if (u.protocol !== 'https:' || u.hostname === '') return 'iss';
+	} catch {
+		return 'iss';
+	}
+	const n = Buffer.byteLength(typeof body.sub === 'string' ? body.sub : '');
+	return n === 0 || n > IDENTITY_SUBJECT_MAX_BYTES ? 'sub' : null;
+}
+
+function refuseIdentity(res: ServerResponse, body: Record<string, unknown>): boolean {
+	const field = identityField(body);
+	if (field) send(res, 422, { error: 'invalid_identity', field });
+	return field !== null;
+}
 const UNGATED = new Set(['auth', 'sessions/local', 'sessions/oidc', 'bootstrap/import']);
+
+// The API mints a new token per session; the stub reuses one, so a re-issue clears its failures.
+function issue(state: State, res: ServerResponse) {
+	state.revoked.delete(STUB_SESSION_TOKEN);
+	state.reauthFailures.delete(STUB_SESSION_TOKEN);
+	const expires = new Date(Date.now() + STUB_SESSION_TTL_MS).toISOString();
+	state.issued.push(expires);
+	return send(res, 201, { token: STUB_SESSION_TOKEN, expires_at: expires, user: STUB_USER });
+}
 
 async function sessionsLocal(state: State, req: IncomingMessage, res: ServerResponse) {
 	const body = JSON.parse((await readBody(req)) || '{}') as Record<string, unknown>;
@@ -470,19 +511,16 @@ async function sessionsLocal(state: State, req: IncomingMessage, res: ServerResp
 	if (body.username !== STUB_USER.username || body.password !== TEST_ADMIN_PASSWORD) {
 		return send(res, 401, { error: 'invalid_credentials' });
 	}
-	const expires = new Date(Date.now() + STUB_SESSION_TTL_MS).toISOString();
-	state.issued.push(expires);
-	return send(res, 201, { token: STUB_SESSION_TOKEN, expires_at: expires, user: STUB_USER });
+	return issue(state, res);
 }
 
 async function sessionsOidc(state: State, req: IncomingMessage, res: ServerResponse) {
 	const body = JSON.parse((await readBody(req)) || '{}') as OidcSessionBody;
 	state.oidcSessions.push(body);
 	if (state.auth.mode === 'local') return send(res, 403, { error: 'mode' });
+	if (refuseIdentity(res, body)) return;
 	if (body.sub !== STUB_LINKED_SUB) return send(res, 403, { error: 'not_linked' });
-	const expires = new Date(Date.now() + STUB_SESSION_TTL_MS).toISOString();
-	state.issued.push(expires);
-	return send(res, 201, { token: STUB_SESSION_TOKEN, expires_at: expires, user: STUB_USER });
+	return issue(state, res);
 }
 
 // Mirrors the API's re-auth and link refusals (spec 12.7): mode, then session_kind.
@@ -496,8 +534,12 @@ function linkRefusal(state: State, res: ServerResponse): boolean {
 async function reauth(state: State, req: IncomingMessage, res: ServerResponse, session: string) {
 	const body = JSON.parse((await readBody(req)) || '{}') as Record<string, unknown>;
 	if (linkRefusal(state, res)) return;
-	if (body.password !== TEST_ADMIN_PASSWORD)
+	if (body.password !== TEST_ADMIN_PASSWORD) {
+		const failures = (state.reauthFailures.get(session) ?? 0) + 1;
+		state.reauthFailures.set(session, failures);
+		if (failures >= REAUTH_MAX_FAILURES) state.revoked.add(session);
 		return send(res, 401, { error: 'invalid_credentials' });
+	}
 	state.reauthed.add(session);
 	return send(res, 204);
 }
@@ -511,6 +553,7 @@ async function identities(
 	const body = JSON.parse((await readBody(req)) || '{}') as Record<string, unknown>;
 	state.identityCalls.push({ session, body });
 	if (linkRefusal(state, res)) return;
+	if (refuseIdentity(res, body)) return;
 	if (state.auth.identities === 'already_linked')
 		return send(res, 409, { error: 'already_linked' });
 	if (state.auth.identities === 'reauth_required' || !state.reauthed.has(session)) {
@@ -524,9 +567,12 @@ async function handleApi(state: State, req: IncomingMessage, res: ServerResponse
 	const method = req.method ?? 'GET';
 	if (method === 'POST' && route === 'bootstrap/import') {
 		if (req.headers.authorization !== `Bearer ${STUB_TOKEN}`) return send(res, 401);
-		const body = JSON.parse((await readBody(req)) || '{}') as { username?: unknown };
+		const body = JSON.parse((await readBody(req)) || '{}') as Record<string, unknown>;
 		if (typeof body.username !== 'string' || !USERNAME.test(body.username)) {
 			return send(res, 422, { error: 'invalid_username', field: 'username' });
+		}
+		if (!validPassword(body.password)) {
+			return send(res, 422, { error: 'invalid_password', field: 'password' });
 		}
 		const result = state.imports.length === 0 ? 'imported' : 'skipped';
 		state.imports.push({ username: String(body.username) });
@@ -544,7 +590,8 @@ async function handleApi(state: State, req: IncomingMessage, res: ServerResponse
 	if (req.headers.authorization !== `Bearer ${STUB_TOKEN}`) return send(res, 401);
 	if (!UNGATED.has(route)) {
 		if (route === 'session' && method === 'DELETE') return send(res, 204);
-		if (session !== STUB_SESSION_TOKEN && session !== STUB_SESSION_TOKEN_2) {
+		const known = session === STUB_SESSION_TOKEN || session === STUB_SESSION_TOKEN_2;
+		if (!known || state.revoked.has(String(session))) {
 			return send(res, 401, { error: 'session' });
 		}
 	}
@@ -580,6 +627,8 @@ export function startStub(port = STUB_PORT) {
 		issued: [],
 		oidcSessions: [],
 		reauthed: new Set(),
+		reauthFailures: new Map(),
+		revoked: new Set(),
 		identityCalls: []
 	};
 	const server = createServer(async (req, res) => {
@@ -635,6 +684,8 @@ export function startStub(port = STUB_PORT) {
 			state.issued = [];
 			state.oidcSessions = [];
 			state.reauthed = new Set();
+			state.reauthFailures = new Map();
+			state.revoked = new Set();
 			state.identityCalls = [];
 			return send(res, 204);
 		}

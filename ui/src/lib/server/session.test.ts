@@ -66,7 +66,16 @@ describe('safeNext', () => {
 		['/.///evil.example', '/'],
 		['/login/', '/'],
 		['/logout?x=1', '/'],
-		['/a/../messages', '/messages']
+		['/a/../messages', '/messages'],
+		['/login/sso', '/'],
+		['/login/sso/', '/'],
+		['/login/sso?next=/x', '/'],
+		['/auth/callback', '/'],
+		['/auth/callback?code=x&state=y', '/'],
+		['/auth/link', '/'],
+		['/auth/', '/'],
+		['/a/../auth/callback', '/'],
+		['/authors', '/authors']
 	])('safeNext(%s) is %s', (input, want) => {
 		expect(safeNext(input)).toBe(want);
 	});

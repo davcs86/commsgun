@@ -283,10 +283,8 @@ func TestSubjectRFC2047(t *testing.T) {
 	refused(t, "koi8-r subject", msg("x", koi8...), replyContent)
 }
 
-// queued/duplicate 250 2.0.0; channel_not_allowed, sender_not_allowed 550 5.7.1;
-// invalid_subject, body_required, invalid_reply_to, idempotency_conflict 554 5.6.0;
-// rate_limited 451 4.7.1; 503 451 4.3.2; invalid_json, unknown_field, internal,
-// too_many_recipients_for_limit (RCPT caps first, Task 11) 451 4.3.0
+// Each enqueue outcome maps to one SMTP reply; anything unlisted (internal, decode errors,
+// too_many_recipients_for_limit) is 451 4.3.0.
 func TestReplyFor(t *testing.T) {
 	type r = struct {
 		code int

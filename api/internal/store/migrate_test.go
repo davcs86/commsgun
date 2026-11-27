@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 )
@@ -90,6 +91,35 @@ VALUES ('m1','r1','app1','email','r@x.com','a@x.com','queued',1,1,2);`); err != 
 	var rcpt string
 	if err := s.w.QueryRow(`SELECT recipient FROM messages WHERE id='m1'`).Scan(&rcpt); err != nil || rcpt != "r@x.com" {
 		t.Fatalf("row = %q (%v)", rcpt, err)
+	}
+}
+
+// Two processes opening one version-1 volume (WAL, as Open leaves it): both succeed, 0002 applies once.
+func TestConcurrentOpensMigrateOnce(t *testing.T) {
+	dir := t.TempDir()
+	db := rawDB(t, filepath.Join(dir, dbFile))
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL;` + schemaSQL); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	var wg sync.WaitGroup
+	stores := make([]*Store, 2)
+	errs := make([]error, 2)
+	for i := range stores {
+		wg.Go(func() { stores[i], errs[i] = Open(dir) })
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		defer stores[i].Close()
+	}
+	if v := version(t, stores[0].w); v != 2 {
+		t.Fatalf("version = %d, want 2", v)
+	}
+	if n := objects(t, stores[0].w, "users", "identities", "sessions", "sessions_user"); n != 4 {
+		t.Fatalf("account objects = %d, want 4", n)
 	}
 }
 
