@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/davcs86/commsgun/api/internal/constants"
 	"github.com/davcs86/commsgun/api/internal/model"
 )
 
@@ -245,6 +247,59 @@ func TestAuthModeConfig(t *testing.T) {
 	for m, want := range allows {
 		if m.Allows(model.KindLocal) != want[0] || m.Allows(model.KindOIDC) != want[1] {
 			t.Errorf("%s.Allows: local %v oidc %v, want %v", m, m.Allows(model.KindLocal), m.Allows(model.KindOIDC), want)
+		}
+	}
+}
+
+// smtp_submission default false; send_window_seconds default 86400; 0, 86401 → Load error
+func TestSMTPAppConfig(t *testing.T) {
+	c, err := load(t, validDoc(), baseEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := c.Apps["a"]; a.SMTPSubmission || a.SendWindow != constants.MaxSendWindow {
+		t.Errorf("defaults: smtp %v window %v", a.SMTPSubmission, a.SendWindow)
+	}
+	d := validDoc()
+	app0(d)["smtp_submission"] = true
+	app0(d)["send_window_seconds"] = 3600
+	if c, err = load(t, d, baseEnv()); err != nil {
+		t.Fatal(err)
+	}
+	if a := c.Apps["a"]; !a.SMTPSubmission || a.SendWindow != time.Hour {
+		t.Errorf("set: smtp %v window %v", a.SMTPSubmission, a.SendWindow)
+	}
+	app0(d)["send_window_seconds"] = 86400
+	if c, err = load(t, d, baseEnv()); err != nil || c.Apps["a"].SendWindow != constants.MaxSendWindow {
+		t.Errorf("86400: %v", err)
+	}
+	for _, v := range []any{0, -1, 86401, 1 << 62} {
+		app0(d)["send_window_seconds"] = v
+		if _, err := load(t, d, baseEnv()); err == nil || !strings.Contains(err.Error(), "send_window_seconds") {
+			t.Errorf("send_window_seconds=%v: err %v", v, err)
+		}
+	}
+}
+
+// smtp app + key → ok; non-smtp app with its key → false; unknown app → false
+func TestAuthenticateSMTP(t *testing.T) {
+	d := validDoc()
+	d["apps"] = append(d["apps"].([]any), doc{"id": "b", "key": key2, "smtp_submission": true,
+		"channels": doc{"sms": doc{"per_minute": 1, "per_day": 1}}})
+	c, err := load(t, d, baseEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, ok := c.AuthenticateSMTP("b", key2); !ok || a == nil || a.ID != "b" {
+		t.Errorf("smtp app: got %v %v", a, ok)
+	}
+	for name, tc := range map[string][2]string{
+		"non-smtp app": {"a", key1},
+		"wrong key":    {"b", key1},
+		"unknown app":  {"zzz", key2},
+	} {
+		if a, ok := c.AuthenticateSMTP(tc[0], tc[1]); ok || a != nil {
+			t.Errorf("%s: authenticated (%v, %v)", name, a, ok)
 		}
 	}
 }

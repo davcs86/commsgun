@@ -9,6 +9,7 @@ import (
 	"net/mail"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/davcs86/commsgun/api/internal/constants"
 	"github.com/davcs86/commsgun/api/internal/model"
@@ -37,8 +38,10 @@ type ChannelCfg struct {
 }
 
 type App struct {
-	ID, Key  string
-	Channels map[model.Channel]ChannelCfg
+	ID, Key        string
+	Channels       map[model.Channel]ChannelCfg
+	SMTPSubmission bool
+	SendWindow     time.Duration
 }
 
 type ProviderCfg struct {
@@ -81,9 +84,11 @@ type rawConfig struct {
 }
 
 type rawApp struct {
-	ID       string                `json:"id"`
-	Key      string                `json:"key"`
-	Channels map[string]rawChannel `json:"channels"`
+	ID                string                `json:"id"`
+	Key               string                `json:"key"`
+	Channels          map[string]rawChannel `json:"channels"`
+	SMTPSubmission    bool                  `json:"smtp_submission"`
+	SendWindowSeconds *int                  `json:"send_window_seconds"`
 }
 
 type rawChannel struct {
@@ -165,7 +170,15 @@ func buildApp(i int, ra rawApp) (App, error) {
 	if len(ra.Key) < constants.MinSecretLen {
 		return App{}, fmt.Errorf("%s.key: must be at least %d characters", p, constants.MinSecretLen)
 	}
-	app := App{ID: ra.ID, Key: ra.Key, Channels: map[model.Channel]ChannelCfg{}}
+	app := App{ID: ra.ID, Key: ra.Key, Channels: map[model.Channel]ChannelCfg{},
+		SMTPSubmission: ra.SMTPSubmission, SendWindow: constants.MaxSendWindow}
+	if ra.SendWindowSeconds != nil {
+		maxSec := int(constants.MaxSendWindow / time.Second)
+		if sec := *ra.SendWindowSeconds; sec <= 0 || sec > maxSec {
+			return App{}, fmt.Errorf("%s.send_window_seconds: must be 1 to %d", p, maxSec)
+		}
+		app.SendWindow = time.Duration(*ra.SendWindowSeconds) * time.Second
+	}
 	for name, rc := range ra.Channels {
 		ch := model.Channel(name)
 		cp := fmt.Sprintf("%s.channels.%s", p, name)
@@ -280,4 +293,13 @@ func (c *Config) Authenticate(appID, bearer string) (*App, bool) {
 		return nil, false
 	}
 	return &app, true
+}
+
+// AuthenticateSMTP is Authenticate, then accepts only an app with smtp_submission; it costs the same.
+func (c *Config) AuthenticateSMTP(appID, key string) (*App, bool) {
+	app, ok := c.Authenticate(appID, key)
+	if !ok || !app.SMTPSubmission {
+		return nil, false
+	}
+	return app, true
 }

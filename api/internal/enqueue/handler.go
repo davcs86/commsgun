@@ -107,7 +107,7 @@ func (h *handler) serve(w *statusWriter, r *http.Request, now time.Time, info *l
 
 	appID := r.Header.Get(headerApp)
 	app, ok := h.cfg.Authenticate(appID, bearer(r))
-	if !ok {
+	if !ok || app.SMTPSubmission {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": errUnauthorized})
 		return
 	}

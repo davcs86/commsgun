@@ -48,6 +48,13 @@ func Submit(ctx context.Context, cfg *config.Config, st Enqueuer, now time.Time,
 // SubmitNamespaced validates key by the caller-facing rules, then stores it under namespace.
 func SubmitNamespaced(ctx context.Context, cfg *config.Config, st Enqueuer, now time.Time,
 	app *config.App, namespace, key string, body []byte, sourceIP string) (Outcome, *Failure) {
+	return SubmitWindowed(ctx, cfg, st, now, app, namespace, key, body, sourceIP, 0)
+}
+
+// SubmitWindowed is SubmitNamespaced; a window > 0 sets expires_at to now+window after hashing,
+// so it never changes the request hash. window must not exceed MaxSendWindow (API-10).
+func SubmitWindowed(ctx context.Context, cfg *config.Config, st Enqueuer, now time.Time,
+	app *config.App, namespace, key string, body []byte, sourceIP string, window time.Duration) (Outcome, *Failure) {
 	var out Outcome
 	switch {
 	case key == "":
@@ -80,6 +87,9 @@ func SubmitNamespaced(ctx context.Context, cfg *config.Config, st Enqueuer, now 
 	in, verr := validateRequest(app, &req, hash, now)
 	if verr != nil {
 		return out, unprocessable(verr.Message, verr.Field)
+	}
+	if window > 0 {
+		in.ExpiresAt = now.Add(window)
 	}
 	out.Channel, out.Recipients = in.Channel, len(in.Recipients)
 	cc, enabled := app.Channels[in.Channel]

@@ -430,3 +430,21 @@ func TestLookupRequestErrorsMapLikeStoreErrors(t *testing.T) {
 		t.Fatalf("%d %s calls=%d", w.Code, w.Body, st.called())
 	}
 }
+
+// right key → 401 body byte-identical to a wrong key's
+func TestSMTPAppRefusedOnHTTP(t *testing.T) {
+	cfg := testConfig()
+	a := cfg.Apps[testApp]
+	a.ID, a.SMTPSubmission = "mailer", true
+	cfg.Apps[a.ID] = a
+	st := okStore()
+	h := newHandler(cfg, st)
+	right := do(h, newReq(testBody, header(headerApp, a.ID)))
+	wrong := do(h, newReq(testBody, header(headerApp, a.ID), header("Authorization", "Bearer "+strings.Repeat("z", 40))))
+	if right.Code != 401 || right.Body.String() != wrong.Body.String() || fmt.Sprint(right.Header()) != fmt.Sprint(wrong.Header()) {
+		t.Fatalf("right key: %d %q %v; wrong key: %d %q %v", right.Code, right.Body, right.Header(), wrong.Code, wrong.Body, wrong.Header())
+	}
+	if st.called() != 0 {
+		t.Fatal("store reached")
+	}
+}
