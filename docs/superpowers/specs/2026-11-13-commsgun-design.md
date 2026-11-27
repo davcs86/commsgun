@@ -656,8 +656,10 @@ login keeps working while the issuer is unreachable. Switching mode needs no log
 and deploy.
 
 The UI holds the relying-party settings: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, all set or all unset,
-and `OIDC_SCOPES` (optional, default `openid profile email`). With the mode at `oidc`/`both` and them unset, the login
-page says SSO is not configured and logs it once. `OIDC_AUTO_PROVISION` is **not** implemented: commsgun has one role,
+and `OIDC_SCOPES` (optional, default `openid profile email`). `OIDC_ISSUER` must be an `https:` URL, with no loopback
+exception (`http://localhost` and `http://127.0.0.1` are refused too), and the relying party never sets openid-client's
+`allowInsecureRequests` **(owner, 2026-11-27)**. With the mode at `oidc`/`both` and them unset, the login page says SSO
+is not configured and logs it once. `OIDC_AUTO_PROVISION` is **not** implemented: commsgun has one role,
 so every provisioned user would be an admin. The **UI** refuses to start if it is set (declared in
 `ui/src/env.ts#variables`, checked in `loadEnv`, CG-08) **(call: a deliberate deviation from the shared contract's
 config list)**.
@@ -824,8 +826,8 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
   all-or-nothing hold unchanged:
   - envelope `MAIL FROM` must be one of the app's allowed senders, and the header `From` must carry the same address
     (its display name is kept);
-  - recipients come from `RCPT TO` only (1 to `min(10, per_minute, per_day)` of the app), each checked at `RCPT`
-    with the enqueue path's recipient check
+  - recipients come from `RCPT TO` only (1 to `min(10, per_minute, per_day)` of the app's email channel), each checked at
+    `RCPT` with the enqueue path's recipient check
     (`validate.go#validRecipient`), so `invalid_recipient` cannot reach `DATA`; `To` and `Cc` headers are not used,
     and `Bcc` is never forwarded;
   - `Subject` is RFC 2047-decoded; `Reply-To`, if present, must be one address and becomes `reply_to`; other headers
@@ -852,7 +854,7 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
   | Bad credentials, any cause | `535 5.7.8` |
   | `MAIL FROM` not an allowed sender; header `From` differs; `channel_not_allowed` | `550 5.7.1` |
   | Malformed `RCPT TO` address | `553 5.1.3` |
-  | An `RCPT TO` beyond `min(10, per_minute, per_day)` of the app (so `too_many_recipients_for_limit` cannot reach `DATA`) | `452 4.5.3` |
+  | An `RCPT TO` beyond `min(10, per_minute, per_day)` of the app's email channel (so `too_many_recipients_for_limit` cannot reach `DATA`) | `452 4.5.3` |
   | `DATA` over `SIZE` | `552 5.3.4` |
   | Unsupported content, no `Message-ID`, a bad `Reply-To`, a refused subject (CR/LF, over 998), `body_required` (no non-empty part), `idempotency_conflict` (same `Message-ID`, other content) | `554 5.6.0` |
   | `rate_limited` | `451 4.7.1` |
@@ -876,7 +878,7 @@ Authelia sends reset links and enrolment codes through it (SSO spec decision 23,
 | API | `AUTH_MODE` | 12.2; default `local` |
 | API | `ENQUEUE_ADDR`, `ADMIN_ADDR`, `SMTP_ADDR` | `host:port` (12.8) |
 | API | `SMTP_TLS_CERT_FILE`, `SMTP_TLS_KEY_FILE` | paths to PEM files (12.8); required when `SMTP_ADDR` is set, refused otherwise |
-| UI | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (secret) | 12.2; all or none |
+| UI | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (secret) | 12.2; all or none; `OIDC_ISSUER` is an `https:` URL with no loopback exception (owner, 2026-11-27) |
 | UI | `OIDC_SCOPES` | optional; default `openid profile email` |
 | UI | `OIDC_AUTO_PROVISION` | refused if set (12.2) |
 | UI | `ADMIN_PASSWORD` | optional, import-only (12.6); if set, at least 16 code points (supersedes 7.5) |
@@ -907,6 +909,10 @@ limit fails it (12.1).
 e2e authentication (UI-05 is rewritten in the build PR): the session is opaque, so there is no cookie to forge. The
 stub's `GET /admin/v1/session` accepts one fixed `fake-`-prefixed token, sized like the other stub fixtures, and
 answers its `User`; `beforeEach` sets `commsgun_session` to it, and only the login specs drive the form **(call)**.
+
+e2e SSO: the stub issuer serves HTTPS from a test CA that OpenSSL 3 makes when the stub starts, and the UI process
+trusts it only through `NODE_EXTRA_CA_CERTS`; `allowInsecureRequests` is never set. `loadEnv` refuses an `http:` issuer,
+loopback hosts included **(owner, 2026-11-27)**.
 
 ## 13. Threat model (draft, pending owner review before P5)
 

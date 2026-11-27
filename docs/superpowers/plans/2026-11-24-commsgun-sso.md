@@ -344,7 +344,7 @@ func TestUnknownUsernameUsesDummyHash(t *testing.T) // VerifyDummy 1, Verify 0
 func TestSessionsOIDC(t *testing.T)       // linked → 201; unlinked, disabled → 403 not_linked; mode local → 403 mode;
                                           // iss "http://x", "", "not a url"; sub "", 256 bytes → 422 {"error":"invalid_identity","field":…}
 func TestBootstrapImport(t *testing.T)    // empty → {"result":"imported"}; again → skipped with no Hash call;
-                                          // 15 chars, 1025 bytes → 422 {"error":"invalid_password","field":"password"} even when users exist
+                                          // 15 code points (and "😀"×15), 1025 bytes → 422 {"error":"invalid_password","field":"password"} even when users exist
 func TestBootstrapImportRace(t *testing.T)// 8 concurrent → one imported, seven skipped, one row
 func TestSessionGetDelete(t *testing.T)   // 200 {"user","kind","expires_at"}; missing/unknown/expired/?commsgun-session= → 401 {"error":"session"};
                                           // DELETE → 204 for valid, missing and unknown; GET after DELETE → 401
@@ -494,7 +494,9 @@ it('accepts an unset or empty ADMIN_PASSWORD as null; rejects 15 code points and
 - Create: `ui/src/lib/server/oidc.ts`, `ui/src/lib/server/oidc-cookie.ts`, `ui/src/lib/login.ts`,
   `ui/src/routes/login/sso/+server.ts`, `ui/src/routes/auth/callback/+page.server.ts`, `+page.svelte`,
   `ui/e2e/stub-issuer.ts`, `ui/e2e/sso.spec.ts`
-- Modify: `ui/package.json`, `ui/pnpm-lock.yaml` (`pnpm add -D -E openid-client@<newest 6.x ≥ 2 weeks old>`),
+- Modify: `ui/package.json`, `ui/pnpm-lock.yaml` (`pnpm add -D -E openid-client@6.8.9`; re-check at
+  execution that 6.8.9 is still the newest release at least two weeks old; the shared conformance claims, Q9 and spec
+  12.4's 300 s JWKS refetch, were checked against 6.8.9 with oauth4webapi 3.8.9),
   `ui/src/env.ts`, `ui/src/lib/server/env.ts`, `ui/src/lib/server/constants.ts`, `ui/src/lib/server/api.ts`
   (`createOidcSession`), `ui/src/hooks.server.ts` (`PUBLIC_PATHS` + `/login/sso`, `/auth/callback`),
   `ui/src/routes/login/+page.server.ts`, `+page.svelte`, `ui/e2e/stub-api.ts` (`POST sessions/oidc`),
@@ -504,7 +506,7 @@ it('accepts an unset or empty ADMIN_PASSWORD as null; rejects 15 code points and
 **Interfaces:**
 - Produces:
   - `Env.oidc: { issuer: string; clientId: string; clientSecret: string; scopes: string } | null` (all three set or all
-    unset; `OIDC_SCOPES` default `openid profile email`; issuer `https:` only, loopback hosts too, and the RP never sets
+    unset; `OIDC_SCOPES` default `openid profile email`; issuer `https:` only, no loopback exception, and the RP never sets
     openid-client's `allowInsecureRequests`); `Env.oidcKey: Buffer` =
     HMAC-SHA256(`SESSION_SECRET`, `OIDC_KEY_LABEL`); `OIDC_AUTO_PROVISION` present (even empty) → throws. `src/env.ts`
     declares it with a schema that keeps `undefined`.
@@ -724,9 +726,9 @@ func TestDuplicateMessageID(t *testing.T)    // Review Focus 5: same message at 
     `AllowInsecureAuth` stays off, so `AUTH` before STARTTLS gets go-smtp's own `523 5.7.10`; the session implements
     `smtp.AuthSession` (`PLAIN` only), refuses `MAIL` before STARTTLS and, after it, before AUTH (530 5.7.0, RFC 4954),
     checks `MAIL FROM` against the app's senders, each `RCPT` with `enqueue.ValidRecipient` (553 5.1.3) and against
-    `min(MaxRecipients, per_minute, per_day)` of the app (452 4.5.3), caps sessions at `SMTPMaxSessions` (`NewSession`
-    → 451 4.3.2) and messages per connection at `SMTPMaxMessagesPerConn` (the 11th message's `MAIL` → 451 4.3.2);
-    `Data` calls `BuildRequest` then
+    `min(MaxRecipients, per_minute, per_day)` of the app's email channel (452 4.5.3), caps sessions at `SMTPMaxSessions`
+    (`NewSession` → 451 4.3.2) and messages per connection at `SMTPMaxMessagesPerConn` (the 11th message's `MAIL` →
+    451 4.3.2); `Data` calls `BuildRequest` then
     `SubmitWindowed(…, "smtp", key, …, peer IP, app.SendWindow)` and answers `ReplyFor`. One log line per session:
     outcome, app (after AUTH only), counts, reply codes.
   - `run(ctx context.Context, getenv func(string) string, stdout io.Writer) error` — addresses from config; loads the
@@ -765,7 +767,7 @@ Existing `main_test.go` helpers move from `run(…, enqAddr, admAddr)` to env va
 
 **Files:**
 - Modify: `README.md` (Configuration: K3/U2 vars and `COMMSGUN_CONFIG` keys; a short "Accounts" section with the CLI
-  verbs and the `docker compose run --rm -T commsgun-admin admin <verb>` shape; Tests: the e2e run needs `openssl` for
+  verbs and the `docker compose run --rm -T commsgun-admin admin <verb>` shape; Tests: the e2e run needs OpenSSL 3 for
   the stub issuer's test CA), `docs/context-constitution.md`
   (CG-01 evidence: account JSON; CG-02 twins: `PasswordMinChars` ↔ `MIN_ADMIN_PASSWORD`, `SessionTokenBytes` ↔
   `SESSION_TOKEN`, `AUTH_TIME_SKEW_MS` ↔ the SSO spec § 3 skew; CG-06: smoke runs the API at `--memory 96m`; CG-08
@@ -795,9 +797,9 @@ Existing `main_test.go` helpers move from `run(…, enqAddr, admAddr)` to env va
 | Q1 | Values the spec leaves open: (a) argon2id salt and key length; (b) the account routes' body cap and its refusal (12.7 lists no 413); (c) a maximum `iss` length; (d) the UI's import retry interval; (e) the SMTP write timeout | **Resolved (owner, 2026-11-27):** the proposal stands: (a) argon2id 16 B salt, 32 B key (RFC 9106); (b) `AccountMaxBodyBytes` 4096 (= `ProbeMaxBodyBytes`), empty 413 like the probe; (c) no `iss` length limit beyond (b); (d) `IMPORT_RETRY_MS` 1000, no upper bound; (e) the SMTP listener reuses `WriteTimeout` 30 s (spec 12.1, 12.6, 12.7, 12.8; Tasks 2, 5, 6, 11) | — |
 | Q2 | Spec 12.8 says a resent `Message-ID` with the same content is `250` (duplicate), but `SubmitNamespaced` hashes the whole request including `expires_at`, which the SMTP path derives from `now`, so a later resend hashes differently and answers `idempotency_conflict` (554) | **Resolved (owner, 2026-11-27):** the proposal stands: build the request without `expires_at`; `SubmitWindowed` applies `now + send_window` after hashing; HTTP and probe unchanged (spec 12.8) | — |
 | Q3 | Spec 12.8: `AUTH` before STARTTLS → `530 5.7.0`. go-smtp v0.26 answers `523 5.7.10` itself unless `AllowInsecureAuth` is on, which also advertises `AUTH` before TLS (inviting clients to send the key in clear) | **Resolved (owner, 2026-11-27):** keep `AllowInsecureAuth` off; `AUTH` before STARTTLS answers `523 5.7.10` (spec 12.8 row amended); `MAIL` before STARTTLS stays `530 5.7.0` (Task 11) | — |
-| Q4 | Gaps in the 12.8 reply table: `MAIL` after STARTTLS but before `AUTH`; the 11th message on one connection; more `RCPT`s than the app's `per_minute`/`per_day` (enqueue answers `too_many_recipients_for_limit`, which the table maps to `451 4.3.0` "defect") | **Resolved (owner, 2026-11-27):** `MAIL` after STARTTLS but before `AUTH` → `530 5.7.0` (RFC 4954); the 11th message on one connection → `451 4.3.2`; an `RCPT` beyond `min(10, per_minute, per_day)` of the app → `452 4.5.3` at `RCPT` (spec 12.8 table; Tasks 10, 11) | — |
+| Q4 | Gaps in the 12.8 reply table: `MAIL` after STARTTLS but before `AUTH`; the 11th message on one connection; more `RCPT`s than the app's `per_minute`/`per_day` (enqueue answers `too_many_recipients_for_limit`, which the table maps to `451 4.3.0` "defect") | **Resolved (owner, 2026-11-27):** `MAIL` after STARTTLS but before `AUTH` → `530 5.7.0` (RFC 4954); the 11th message on one connection → `451 4.3.2`; an `RCPT` beyond `min(10, per_minute, per_day)` of the app's email channel → `452 4.5.3` at `RCPT` (spec 12.8 table; Tasks 10, 11) | — |
 | Q5 | "16 characters": Go can count code points, but the UI's `loadEnv` counts UTF-16 units (`v.length`); a non-ASCII `ADMIN_PASSWORD` could pass the UI and fail the import | **Resolved (owner, 2026-11-27):** both count code points (`utf8.RuneCountInString` in Go, `[...v].length` in the UI); the spec says code points (12.1, 12.6, 12.9; Tasks 2, 7) | — |
-| Q6 | `openid-client` 6 refuses a non-`https` issuer unless `allowInsecureRequests` is set; the e2e stub issuer is plain HTTP | **Resolved (owner, 2026-11-27; not the proposal):** the e2e stub issuer serves HTTPS from a CA made by `openssl` when the stub starts, trusted by the UI process through `NODE_EXTRA_CA_CERTS`; production `loadEnv` refuses every non-`https:` issuer and the RP never sets `allowInsecureRequests` (Task 8) | — |
+| Q6 | `openid-client` 6 refuses a non-`https` issuer unless `allowInsecureRequests` is set; the e2e stub issuer is plain HTTP | **Resolved (owner, 2026-11-27; not the proposal):** the e2e stub issuer serves HTTPS from a CA made by `openssl` when the stub starts, trusted by the UI process through `NODE_EXTRA_CA_CERTS`; production `loadEnv` refuses every non-`https:` issuer and the RP never sets `allowInsecureRequests` (spec 12.2, 12.9, 12.10; Task 8) | — |
 | Q7 | Link re-auth: spec 12.5 sends `prompt=login`; SSO spec S17 pairs it with `max_age=1` and a fresh `auth_time` | **Resolved (owner, 2026-11-27; SSO spec § 3 "Linking"):** every link sends `prompt=login` and `max_age=1`; the callback refuses a missing `auth_time` or one before the flow's start minus `AUTH_TIME_SKEW_MS` (30 s), as a failed ID-token check (spec 12.5; Tasks 8, 9) | — |
 | Q8 | § 13 is a draft pending owner review before P5; this plan builds what it states | Review § 13 (and its residuals 1–7) before P5 | P5, not a task |
 | Q9 | Resolved (2026-11-27, cross-repo check): openid-client 6 exports `setJwksCache`/`getJwksCache`, so the shared conformance case "an ID token on a key set older than 3600 s with the refresh failing" is tested as happybabytracker's plan does: a `deps.jwksCache` seam seeds a cache with a real `uat` of now − 301 s (past the library's 300 s refetch age) and the `jwks_uri` fetch fails → refused; now − 10 s passes. No fake clock | — | Task 8 |
